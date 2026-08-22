@@ -23,8 +23,7 @@ from src.data.probes import collect_paired_bank
 from src.kernels import KERNEL_REGISTRY
 from src.losses import LayerwiseAlignmentLoss, build_loss
 from src.models import ProbedModel, build_model
-from src.rules import SGDRule
-from src.rules.tasks import TASK_REGISTRY
+from src.training.factory import make_rule, optimizer_cfg
 from src.training import JointSide, JointTrainer
 from src.training.metrics import tracked_eval
 from src.utils import load_config, set_seed
@@ -44,9 +43,9 @@ def build_side(name: str, cfg: dict, device: str) -> JointSide:
     else:
         probe_kwargs = default_probe
     probed = ProbedModel(backbone, **probe_kwargs)
-    rule = SGDRule(lr=model_cfg["lr"], task=TASK_REGISTRY[model_cfg["task"]])
-    return JointSide(name, probed, rule, lr=model_cfg["lr"], device=device,
-                     view=VIEWS[name])
+    opt = optimizer_cfg(model_cfg)
+    return JointSide(name, probed, make_rule(model_cfg), lr=opt["lr"], device=device,
+                     view=VIEWS[name], optimizer=opt)
 
 
 def main():

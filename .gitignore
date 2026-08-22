@@ -3,9 +3,10 @@ __pycache__/
 *.pyc
 .venv/
 wandb/
-/runs/
+runs/
 checkpoints/
 banks/
-/data/
 *.pt
 .DS_Store
+data/
+*.jsonl

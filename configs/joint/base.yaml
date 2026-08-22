@@ -10,13 +10,13 @@ models:
     kwargs: {out_dim: 1000}
     probe: {layer_types: conv2d}      # ResNet convention: align on Conv2d
     task: image_classification
-    lr: 0.05                  # SGD lr == the rule's step size (pure-SGD decision)
+    optimizer: {name: adamw, lr: 0.001, weight_decay: 0.05, clip_grad_norm: 1.0}
   lm:
     name: gpt2
     kwargs: {preset: small, n_positions: 256}   # from scratch
     probe: {layer_types: layernorm}
     task: lm_next_token
-    lr: 0.05
+    optimizer: {name: adamw, lr: 0.001, weight_decay: 0.05, clip_grad_norm: 1.0}
 
 data:
   # manitoulin/CSAIL paths (crossmodal-prior conventions); override with

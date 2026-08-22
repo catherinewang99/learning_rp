@@ -5,5 +5,5 @@
 _base_: arm_c_pi_only.yaml
 guidance:
   guided: [audio, vision]
-wandb: {name: av-armC-pi-mutual}
-train: {outdir: runs/av-armC-mutual}
+wandb: {name: av-armC-pi-mutual-adamw}
+train: {outdir: runs/av-armC-mutual-adamw}

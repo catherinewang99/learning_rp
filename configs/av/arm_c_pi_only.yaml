@@ -6,5 +6,5 @@ _base_: base.yaml
 guidance:
   loss:
     - {name: cka_pi, weight: 1.0}
-wandb: {name: av-armC-pi-only}
-train: {outdir: runs/av-armC}
+wandb: {name: av-armC-pi-only-adamw}
+train: {outdir: runs/av-armC-adamw}

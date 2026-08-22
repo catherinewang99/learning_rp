@@ -26,7 +26,9 @@ hypothetical update (second order). Nothing stateful, nothing in-place.
 1. **Audio-vision joint co-training (ACTIVE).** VGG-11-GN twins (canonical
    8-conv structure, GroupNorm — see gotchas) classify a 6-class CIFAR-100
    subset (3ch, 32x32) and its class-paired UrbanSound8K subset (1ch log-mel
-   spectrograms), both from scratch with pure SGD; audio is guided by a live,
+   spectrograms), both from scratch with AdamW (decoupled weight decay,
+   global-norm grad clipping; the hypothetical step defining V is the exact
+   AdamW update via rules/adamw.py); audio is guided by a live,
    detached vision teacher, all 8 conv layers aligned strictly 1:1. Pairing
    recipe follows arXiv:2601.22041 (class-level pairing; fixed seeded
    assignment; `shuffled_pairs` control). Arms: A control / B K-CKA
@@ -79,4 +81,7 @@ kept in eval mode (BN/dropout must not pollute kernels); teacher summaries
 use detached params so no graph/gradient ever reaches the teacher; VGG twins
 use GroupNorm, not BatchNorm — BN's batch statistics make kernels
 probe-batch-dependent in train mode and freeze useless at init in eval mode,
-breaking the "V describes the update the model takes" invariant either way.
+breaking the "V describes the update the model takes" invariant either way;
+AdamW is implemented as a functional rule that reads the live optimizer
+moments, with sqrt floors so second-order backward through the update never
+NaNs on zero-gradient params.

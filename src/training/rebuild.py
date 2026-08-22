@@ -14,8 +14,7 @@ from ..data import paired_av
 from ..data.probes import collect_paired_bank
 from ..kernels import KERNEL_REGISTRY
 from ..models import ProbedModel, build_model
-from ..rules import SGDRule
-from ..rules.tasks import TASK_REGISTRY
+from .factory import make_rule, optimizer_cfg
 from .joint_trainer import JointSide
 
 
@@ -49,9 +48,9 @@ def load_run(run_dir: str | Path, checkpoint: str | None = None, device: str = "
         backbone, _ = build_model(mcfg["name"], **mcfg.get("kwargs", {}))
         probed = ProbedModel(backbone, layer_types=[nn.Conv2d],
                              drop_last=mcfg.get("probe", {}).get("drop_last", True))
-        rule = SGDRule(lr=mcfg["lr"], task=TASK_REGISTRY[mcfg["task"]])
-        side = JointSide(name, probed, rule, lr=mcfg["lr"], device=device,
-                         view=paired_av.VIEWS[name])
+        opt = optimizer_cfg(mcfg)
+        side = JointSide(name, probed, make_rule(mcfg), lr=opt["lr"], device=device,
+                         view=paired_av.VIEWS[name], optimizer=opt)
         if state is not None:
             for k, v in side.params.items():
                 v.data.copy_(state[name][k].to(device))

@@ -4,5 +4,5 @@ _base_: base.yaml
 guidance:
   guided: []
   loss: []
-wandb: {name: av-armA-control}
-train: {outdir: runs/av-armA}
+wandb: {name: av-armA-control-adamw}
+train: {outdir: runs/av-armA-adamw}

@@ -30,6 +30,8 @@ class AlignmentTrainer:
         experiences: list,       # SAME list/order used to build the bank
         trainable: str = "weights",
         opt_lr: float = 1e-3,
+        opt_weight_decay: float = 0.0,
+        clip_grad_norm: float | None = None,
         device: str = "cpu",
         log_fn=None,
     ):
@@ -56,7 +58,9 @@ class AlignmentTrainer:
                 raise ValueError(f"trainable=rule but {type(rule).__name__} has no φ")
         else:
             raise ValueError(f"unknown trainable mode: {trainable}")
-        self.optimizer = torch.optim.Adam(leaves, lr=opt_lr)
+        self.leaves = leaves
+        self.clip_grad_norm = clip_grad_norm
+        self.optimizer = torch.optim.AdamW(leaves, lr=opt_lr, weight_decay=opt_weight_decay)
 
     def step(self, bank_index: int) -> dict:
         entry = self.bank[bank_index]
@@ -67,8 +71,11 @@ class AlignmentTrainer:
         total, parts = self.loss(target_summaries, entry["layers"])
         self.optimizer.zero_grad()
         total.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.leaves, self.clip_grad_norm or float("inf"))  # inf = measure only
         self.optimizer.step()
-        metrics = {"loss/total": float(total), "bank_t": entry.get("t", 0)}
+        metrics = {"loss/total": float(total), "bank_t": entry.get("t", 0),
+                   "grad_norm": float(grad_norm)}
         metrics.update({f"loss/{k}": float(v) for k, v in parts.items()})
         return metrics
 

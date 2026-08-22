@@ -77,6 +77,8 @@ def main():
         experiences,
         trainable=cfg["train"]["trainable"],
         opt_lr=cfg["train"]["opt_lr"],
+        opt_weight_decay=cfg["train"].get("opt_weight_decay", 0.0),
+        clip_grad_norm=cfg["train"].get("clip_grad_norm"),
         device=cfg["device"],
         log_fn=maybe_wandb(cfg),
     )

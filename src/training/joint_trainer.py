@@ -1,8 +1,11 @@
 """Joint co-training with plasticity-kernel guidance (env-free experiment).
 
-Two models train simultaneously on paired data, each on its own task with
-pure SGD (project decision: the rule that defines V is the rule the model
-actually trains with). Guided side(s) additionally minimize a layerwise
+Two models train simultaneously on paired data, each on its own task.
+Honesty invariant: the rule that defines V is the update the model actually
+takes — the torch optimizer (SGD or AdamW + weight decay + grad clipping) and
+the functional rule (rules/backprop.py, rules/adamw.py) are built from ONE
+per-model ``optimizer`` config (training/factory.py); stateful rules read the
+live optimizer moments each step. Guided side(s) additionally minimize a layerwise
 alignment loss between their plasticity summaries and the other model's,
 computed on the fixed probe set with experiences drawn from the current
 minibatch.
@@ -27,17 +30,40 @@ from .metrics import cross_model_k_cka
 
 
 class JointSide:
-    """One model's training state: functional params + its optimizer."""
+    """One model's training state: functional params + its optimizer.
 
-    def __init__(self, name: str, probed, rule, lr: float, device: str, view):
+    ``optimizer``: {name: sgd|adamw, weight_decay, betas, eps, clip_grad_norm}
+    (lr comes from the ``lr`` arg). The torch optimizer here and the rule's
+    hypothetical step must describe the same update — build both from the
+    same config via training/factory.py.
+    """
+
+    def __init__(self, name: str, probed, rule, lr: float, device: str, view,
+                 optimizer: dict | None = None):
         self.name = name
         self.probed = probed.to(device)
         self.rule = rule
         self.params = {k: v.to(device).requires_grad_(True) for k, v in probed.params().items()}
         self.buffers = {k: v.to(device) for k, v in probed.buffers_dict().items()}
-        # Optimizer lr == rule lr: the actual update IS the rule's update.
-        self.optimizer = torch.optim.SGD(list(self.params.values()), lr=lr)
+        opt = dict(optimizer or {"name": "sgd"})
+        leaves = list(self.params.values())
+        if opt.get("name", "sgd") == "sgd":
+            self.optimizer = torch.optim.SGD(leaves, lr=lr)
+        elif opt["name"] == "adamw":
+            self.optimizer = torch.optim.AdamW(
+                leaves, lr=lr, betas=tuple(opt.get("betas", (0.9, 0.999))),
+                eps=opt.get("eps", 1e-8), weight_decay=opt.get("weight_decay", 0.0),
+            )
+        else:
+            raise ValueError(f"unknown optimizer {opt['name']}")
+        self.clip_grad_norm = opt.get("clip_grad_norm")  # None = no clipping
         self.view = view  # paired batch dict -> this side's Experience
+
+    def sync_rule_state(self):
+        """For stateful rules (AdamW): hand the live optimizer moments to the
+        rule so the hypothetical step matches the real one this step."""
+        if hasattr(self.rule, "sync_state"):
+            self.rule.sync_state(self.optimizer, self.params)
 
     def detached_params(self) -> dict[str, torch.Tensor]:
         return {k: v.detach() for k, v in self.params.items()}
@@ -163,6 +189,10 @@ class JointTrainer:
         else:
             idx = torch.randperm(b, generator=self.generator)[: self.m_per_step].tolist()
 
+        # Stateful rules see the optimizer moments the real step will use.
+        for side in self.sides.values():
+            side.sync_rule_state()
+
         # Teacher summaries first (graph-free via detached params), so mutual
         # guidance uses both sides' pre-step state symmetrically.
         summaries_detached = {}
@@ -194,6 +224,12 @@ class JointTrainer:
 
             side.optimizer.zero_grad()
             total.backward()
+            # clip_grad_norm_ returns the pre-clip total norm; max_norm=inf
+            # measures without clipping (torch 2.5 has no get_total_norm).
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                list(side.params.values()), side.clip_grad_norm or float("inf")
+            )
+            metrics[f"{name}/grad_norm"] = float(grad_norm)
             side.optimizer.step()
             metrics[f"{name}/total_loss"] = float(total)
 

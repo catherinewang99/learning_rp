@@ -4,5 +4,5 @@ _base_: base.yaml
 guidance:
   loss:
     - {name: cka_k, weight: 1.0}
-wandb: {name: av-armB-k-only}
-train: {outdir: runs/av-armB}
+wandb: {name: av-armB-k-only-adamw}
+train: {outdir: runs/av-armB-adamw}
