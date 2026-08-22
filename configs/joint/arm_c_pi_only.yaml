@@ -1,0 +1,8 @@
+# Arm C — Π-guidance only (the novel arm): the LM's learning DYNAMICS are
+# pulled toward the vision model's; its representations are never directly
+# matched. Headline question: does K-CKA still rise above Arm A?
+_base_: base.yaml
+guidance:
+  loss:
+    - {name: cka_pi, weight: 1.0}
+wandb: {name: joint-armC-pi-only}

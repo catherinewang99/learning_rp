@@ -1,0 +1,7 @@
+# Arm D — K + Π: does dynamics alignment stack with representational alignment?
+_base_: base.yaml
+guidance:
+  loss:
+    - {name: cka_k, weight: 1.0}
+    - {name: cka_pi, weight: 1.0}
+wandb: {name: joint-armD-k-pi}

@@ -1,0 +1,8 @@
+# Arm B — K-guidance control: representational (CKA) alignment, as in
+# training-the-untrainable; no plasticity term.
+_base_: base.yaml
+guidance:
+  loss:
+    - {name: cka_k, weight: 1.0}
+wandb: {name: av-armB-k-only}
+train: {outdir: runs/av-armB}

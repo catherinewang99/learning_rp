@@ -1,0 +1,40 @@
+# Milestone 2: ResNet18 guide (CIFAR-10) -> MLP target, single state (theta_0).
+# NOTE: data loading + guide trajectory not implemented yet (see ROADMAP).
+
+seed: 0
+device: cuda
+
+guide:
+  model: {name: resnet18, out_dim: 10, pretrained: false}  # start state: PINNED, see ROADMAP
+  layer: avgpool
+  pool: flatten
+  rule: {name: sgd, lr: 0.01}
+  trajectory:
+    steps: 20000
+    checkpoint_every: 2000   # bank over the trajectory (milestone 3)
+
+target:
+  model: {name: mlp, in_dim: 3072, hidden: [512, 512], out_dim: 10}
+  layer: act2
+  pool: flatten
+  rule: {name: sgd, lr: 0.01}
+  init_seed: 1
+
+data:
+  dataset: cifar10
+  probe_size: 256
+  n_experiences: 64
+  experience_batch_size: 1
+
+loss:
+  - {name: cka_k, weight: 1.0}
+  - {name: cka_pi, weight: 1.0}
+  - {name: v_match, weight: 1.0}
+  - {name: magnitude, weight: 0.1}
+
+train:
+  trainable: weights
+  opt_lr: 1.0e-3
+  steps: 5000
+
+wandb: {enabled: true, project: alignment_vislm}

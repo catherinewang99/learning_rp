@@ -1,0 +1,60 @@
+# Joint co-training on paired ImageNet + captions — shared settings.
+# Arms override `guidance` (and wandb.name) only; see arm_*.yaml.
+
+seed: 0
+device: cuda
+
+models:
+  vision:
+    name: resnet18            # from scratch (project decision)
+    kwargs: {out_dim: 1000}
+    probe: {layer_types: conv2d}      # ResNet convention: align on Conv2d
+    task: image_classification
+    lr: 0.05                  # SGD lr == the rule's step size (pure-SGD decision)
+  lm:
+    name: gpt2
+    kwargs: {preset: small, n_positions: 256}   # from scratch
+    probe: {layer_types: layernorm}
+    task: lm_next_token
+    lr: 0.05
+
+data:
+  # manitoulin/CSAIL paths (crossmodal-prior conventions); override with
+  # $IMAGENET_ROOT / $IMAGENET_CAPTIONS_JSON or here.
+  imagenet_root: /storage/dmayo2/datasets/imagenet_pytorch/train
+  captions_json: /storage/catherinewang99/imagenet-captions/imagenet_captions.json
+  batch_size: 64
+  max_caption_length: 64
+  num_workers: 8
+  subset_size: null           # int for debug runs
+  val_fraction: 0.02
+
+guidance:
+  # Direction: which side(s) receive the alignment gradient. The other side is
+  # a live-but-detached teacher. ["lm"] = vision->LM (default), ["vision"] =
+  # reversed, ["lm", "vision"] = mutual, [] = control (arm A).
+  guided: [lm]
+  upper_half: false
+  loss: []                    # arms fill this: [{name: cka_pi, weight: ...}, ...]
+
+plasticity:
+  m_per_step: 8               # experiences subsampled from each minibatch for the
+                              # plasticity term — the scoped cost knob (bounds
+                              # retained second-order graphs per step)
+  probe_size: 128             # n: kernels are n x n on the fixed paired probe set
+  m_eval: 32                  # fixed eval-bank experiences for tracked Π-CKA
+  kernel: linear              # linear | centered | row_normalized (kernels/gram.py)
+                              #   linear   = PDF's K = HHᵀ; V includes mean/offset shifts
+                              #   centered = probe-centered V; Π = relational plasticity only
+
+train:
+  steps: 100000
+  eval_every: 500             # tracked metrics (fixed banks) + val task metrics
+  checkpoint_every: 5000
+  k_val_batches: 8
+  outdir: runs/joint
+
+wandb:
+  enabled: true
+  # NO project here by convention — pass --wandb-project on the command line.
+  name: OVERRIDE_ME

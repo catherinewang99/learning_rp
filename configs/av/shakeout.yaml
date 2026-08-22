@@ -1,0 +1,9 @@
+# Shakeout: arm-A settings at tiny step count — verifies data pipeline, memory,
+# logging, and that task losses move, before launching the real A/B/C arms.
+_base_: arm_a_control.yaml
+train:
+  steps: 300
+  eval_every: 50
+  checkpoint_every: 300
+  outdir: runs/av-shakeout
+wandb: {name: av-shakeout}

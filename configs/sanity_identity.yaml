@@ -1,0 +1,36 @@
+# Milestone 1: guide == target (same arch, same init, same rule).
+# Pipeline is correct iff the alignment loss starts ~0 and meta-grads are ~0.
+# This file doubles as the config schema reference.
+
+seed: 0
+device: cpu
+
+guide:
+  model: {name: mlp, in_dim: 32, hidden: [64, 64], out_dim: 10}
+  layers: [act1, act2]       # explicit probe layers (or omit for zoo default)
+  rule: {name: sgd, lr: 0.01, task: image_classification}
+
+target:
+  model: {name: mlp, in_dim: 32, hidden: [64, 64], out_dim: 10}
+  layers: [act1, act2]
+  rule: {name: sgd, lr: 0.01, task: image_classification}
+  init_seed: 0               # == seed -> identical init to guide (the point)
+
+data:
+  synthetic: true            # random tensors; real datasets at milestone 2
+  probe_size: 24             # n: kernel is n x n, vec V is n^2
+  n_experiences: 12          # m: plasticity kernel is m x m
+  experience_batch_size: 1   # single samples by default (toggle)
+
+loss:
+  - {name: cka_k, weight: 1.0}       # 0th order (Optimization Prior term)
+  - {name: cka_pi, weight: 1.0}      # 1st order, global organization
+  - {name: v_match, weight: 1.0}     # 1st order, per-experience directions
+  - {name: magnitude, weight: 0.1}   # scale (CKA discards it)
+
+train:
+  trainable: weights         # weights (phase B) | rule (phase A)
+  opt_lr: 1.0e-3
+  steps: 50
+
+wandb: {enabled: false, project: alignment_vislm}

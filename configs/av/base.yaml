@@ -1,0 +1,62 @@
+# Audio-vision joint co-training: CIFAR-100 subset <-> UrbanSound8K subset,
+# 6 paired classes (see data/paired_av.CLASS_PAIRS), both sides classification.
+# Arms override `guidance` (and wandb.name) only.
+
+seed: 0
+device: cuda
+
+models:
+  vision:
+    name: vgg11
+    kwargs: {in_channels: 3, out_dim: 6, norm: group}
+    probe: {layer_types: conv2d, drop_last: false}   # align ALL 8 convs (1:1)
+    task: image_classification
+    lr: 0.05                  # pure SGD; optimizer lr == rule step size
+  audio:
+    name: vgg11
+    kwargs: {in_channels: 1, out_dim: 6, norm: group}
+    probe: {layer_types: conv2d, drop_last: false}
+    task: image_classification     # spectrogram = 1-channel image; same CE task
+    lr: 0.05
+
+data:
+  root: data                  # CIFAR-100 auto-downloads here; $LRP_DATA_ROOT convention
+  us8k_cache: data/us8k_cache.pt   # from scripts/prepare_us8k.py
+  batch_size: 64
+  num_workers: 4
+  val_fold: 10                # official US8K fold held out entirely
+  balance: true               # cap classes at the smallest class's pair count
+  shuffled_pairs: false       # control: break class correspondence (labels stay true)
+
+guidance:
+  guided: [audio]             # audio follows vision (vision = detached live teacher)
+  upper_half: false
+  loss: []                    # arms fill this
+
+plasticity:
+  m_per_step: 12              # experiences per minibatch for Π (cost knob);
+                              #   12 = 2 per class when stratified
+  stratify_by: vision         # class-balanced experience subsample (labels from
+                              #   this side's view); null = uniform random
+  checkpoint: true            # recompute stepped probe forwards in backward
+                              #   (memory lever for m; ~1.5x compute on that forward)
+  probe_size: 128             # n: kernels are n x n on the fixed paired probe set
+  m_eval: 32                  # fixed eval-bank experiences for tracked Π-CKA
+  cka_every: 20               # log actual cross-model K-CKA (similarity) every k
+                              #   steps, all arms: cka/probe/* and cka/batch/*
+  kernel: linear              # linear | centered | row_normalized (kernels/gram.py)
+                              #   linear   = PDF's K = HHᵀ; V includes mean/offset shifts
+                              #   centered = probe-centered V; Π = relational plasticity only
+
+train:
+  steps: 20000
+  eval_every: 200
+  checkpoint_every: 2000
+  k_val_batches: 8
+  outdir: runs/av
+
+wandb:
+  enabled: true
+  # NO project here by convention — every run must pass --wandb-project on the
+  # command line so you always know which project you're about to log to.
+  name: OVERRIDE_ME

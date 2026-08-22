@@ -1,0 +1,7 @@
+# Arm A — control: independent co-training, no coupling.
+# Measures baseline "platonic" K-CKA / Π-CKA drift between the two models.
+_base_: base.yaml
+guidance:
+  guided: []
+  loss: []
+wandb: {name: joint-armA-control}

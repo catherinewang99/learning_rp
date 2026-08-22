@@ -1,0 +1,13 @@
+# Matches the server environment pins used by crossmodal-prior:
+torch==2.5.0
+torchvision==0.20.0
+tqdm==4.67.1
+
+torchaudio==2.5.0        # only needed by scripts/prepare_us8k.py (AV track)
+transformers==4.46.0     # GPT-2 student (imagenet-captions track)
+
+# Extras:
+pyyaml
+wandb
+pytest
+matplotlib               # scripts/visualize_av.py only

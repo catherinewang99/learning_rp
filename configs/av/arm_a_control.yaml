@@ -1,0 +1,8 @@
+# Arm A — control: independent co-training, no coupling.
+# Baseline "platonic" K-CKA / Π-CKA drift between the audio and vision models.
+_base_: base.yaml
+guidance:
+  guided: []
+  loss: []
+wandb: {name: av-armA-control}
+train: {outdir: runs/av-armA}

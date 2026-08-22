@@ -1,0 +1,7 @@
+# Arm B — K-guidance only: the online crossmodal analog of
+# training-the-untrainable (representational alignment, no plasticity term).
+_base_: base.yaml
+guidance:
+  loss:
+    - {name: cka_k, weight: 1.0}
+wandb: {name: joint-armB-k-only}

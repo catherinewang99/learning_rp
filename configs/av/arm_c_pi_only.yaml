@@ -1,0 +1,10 @@
+# Arm C — Π-guidance (the test): the audio model's learning DYNAMICS are
+# pulled toward the vision model's; representations are never directly matched.
+# Headline question: does cross-modal K-CKA rise above Arm A, and how does the
+# effect compare with Arm B?
+_base_: base.yaml
+guidance:
+  loss:
+    - {name: cka_pi, weight: 1.0}
+wandb: {name: av-armC-pi-only}
+train: {outdir: runs/av-armC}
