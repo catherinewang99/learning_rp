@@ -1,0 +1,6 @@
+# Arm A — independent: two agents, no coupling. Baseline for K/Π-CKA drift and
+# for the behavioral-alignment metrics.
+_base_: base.yaml
+guidance: {guided: [], loss: []}
+wandb: {name: rl-armA-independent}
+train: {outdir: runs/rl-armA-independent}

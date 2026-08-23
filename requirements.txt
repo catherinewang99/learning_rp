@@ -11,3 +11,5 @@ pyyaml
 wandb
 pytest
 matplotlib               # scripts/visualize_av.py only
+
+mujoco>=3.2                # RL track (arena rendering; EGL on servers)

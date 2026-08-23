@@ -1,0 +1,9 @@
+# Arm C-mutual — Π guidance both ways: each agent aligns to the other's
+# pre-update dynamics on the other's cross-rendered window.
+_base_: base.yaml
+guidance:
+  guided: [audio, vision]
+  loss:
+    - {name: cka_pi, weight: 1.0}
+wandb: {name: rl-armC-pi-mutual}
+train: {outdir: runs/rl-armC-pi-mutual}

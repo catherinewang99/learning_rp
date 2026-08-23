@@ -1,0 +1,8 @@
+# Arm B — K-CKA guidance, vision teaches audio (representational alignment
+# control, training-the-untrainable style).
+_base_: base.yaml
+guidance:
+  loss:
+    - {name: cka_k, weight: 1.0}
+wandb: {name: rl-armB-k-guide-vision}
+train: {outdir: runs/rl-armB-k-guide-vision}

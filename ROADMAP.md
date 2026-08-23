@@ -1,5 +1,28 @@
 # Roadmap
 
+## Track RL — plasticity-kernel coupling of independent navigators (NEW, ACTIVE)
+Vision and audio agents navigate SEPARATE MuJoCo arenas to a speaking goal;
+behavior independent, coupling only via alignment on cross-rendered teacher
+transitions every 10-step window. Headline: do policies/paths converge
+(behavior/* metrics), and does K-CKA rise above arm A?
+- [x] src/rl/: kinematic VecArena (MuJoCo renders, doesn't simulate), speech
+      AudioSensor (gain/noise vs distance, sliding-window spectrogram),
+      ActorCritic vgg-6 twins (shared-encoder value head), minimal PPO (GAE,
+      1 epoch/window), cross-rendering + probe/eval banks, RLTrainer with the
+      same honesty machinery (AdamWRule task = per-transition PPO loss)
+- [x] kernel_viz montages (K / Π / V per side, wandb images + PNGs)
+- [x] configs/rl arms: A independent / B k-guide-vision / C pi-guide-vision /
+      C-mutual; 39 tests green (GL-free FakeArena + synthetic clip)
+- [ ] Server shakeout: arm A few hundred windows (EGL rendering, wall-clock,
+      wandb project rl_audiovis), then micro arm C for memory
+- [ ] Launch arms; watch behavior/action_dist + behavior/policy_kl_sym vs arm A
+- [x] Binaural audio (head-shadow ILD + front bias, 2-ch spectrogram; mono
+      kept as `audio.binaural: false` ablation) — cue histories are (d, beta)
+- [ ] v0 simplifications to revisit: stationary
+      probe audio histories, no barriers, TD(1) student advantages vs teacher
+      GAE, matched-layout trajectory-divergence eval (only probe-bank
+      action-agreement implemented)
+
 ## Track 0 — audio-vision joint co-training (ACTIVE)
 CIFAR-100 subset <-> UrbanSound8K subset (6 paired classes per
 arXiv:2601.22041), VGG-11-GN twins from scratch, audio guided by vision,

@@ -241,7 +241,15 @@ class JointTrainer:
         return metrics
 
     def state_dicts(self) -> dict:
-        return {
-            name: {k: v.detach().cpu() for k, v in side.params.items()}
-            for name, side in self.sides.items()
-        }
+        """Per side: {"params": ..., "optimizer": ...}. Optimizer state is
+        needed to recompute the TRAINING-time V post hoc (AdamW's hypothetical
+        step depends on the live moments). rebuild.load_run also accepts the
+        old params-only format (SGD-era checkpoints)."""
+        out = {}
+        for name, side in self.sides.items():
+            opt_sd = side.optimizer.state_dict()
+            out[name] = {
+                "params": {k: v.detach().cpu() for k, v in side.params.items()},
+                "optimizer": opt_sd,
+            }
+        return out

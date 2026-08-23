@@ -50,6 +50,7 @@ def collect_paired_bank(val_loader, n_probes: int, m_eval: int, views: dict) -> 
     eval_slice = {k: v[n_probes:] for k, v in merged.items()}
     return {
         "probes": {name: view(probe_slice).x for name, view in views.items()},
+        "probe_labels": {name: view(probe_slice).y for name, view in views.items()},
         "eval_experiences": {
             name: batch_to_experiences(eval_slice, view) for name, view in views.items()
         },

@@ -1,0 +1,66 @@
+# RL track: vision and audio agents independently navigate their OWN arenas
+# to a goal; coupling exists only through plasticity-kernel alignment
+# (teacher's window transitions cross-rendered into the student's modality).
+
+seed: 0
+device: cuda
+
+arena:
+  num_envs: 8
+  horizon: 200
+  half_extent: 3.0
+  reach_threshold: 0.35
+  step_length: 0.15
+  max_turn_deg: 25.0
+  camera_hw: 64
+
+audio:
+  clip_path: null             # null -> torchaudio tutorial speech asset (auto-download)
+  window_steps: 8             # spectrogram time axis spans this many past env steps
+  n_mels: 64
+  ref_distance: 0.75          # gain = ref / (ref + d): louder near the goal
+  noise_base: 0.005
+  noise_slope: 0.02           # noisier far from the goal
+  binaural: true              # 2-ch (L, R): head-shadow ILD + front bias give
+  shadow_gain: 0.4            #   instantaneous direction; false = mono
+  front_gain: 0.2             #   loudness-trend-only ablation
+
+model:
+  widths: [32, 64, 128, 128, 256, 256]   # vgg-6 twins (GroupNorm, 1:1 conv alignment)
+  trunk_dim: 256
+
+optimizer: {name: adamw, lr: 0.0003, weight_decay: 0.01, betas: [0.9, 0.999],
+            eps: 1.0e-8, clip_grad_norm: 0.5}
+
+ppo:
+  clip_coef: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  gamma: 0.99
+  gae_lambda: 0.95
+
+guidance:
+  guided: [audio]             # audio follows vision; [] = arm A; both = mutual
+  upper_half: false
+  loss: []                    # arms fill this
+
+plasticity:
+  window_len: 10              # env steps per window; update (PPO [+align]) at boundary
+  m_per_window: 12            # teacher transitions cross-rendered per alignment
+  probe_size: 64              # fixed paired probe states (rows sorted by dist-to-goal)
+  eval_transitions: 24        # fixed paired transition bank for tracked Π-CKA
+  kernel: linear              # linear | centered | row_normalized
+  checkpoint: true
+
+train:
+  windows: 50000              # x window_len = 500k env steps per agent
+  eval_every: 100             # windows: tracked CKA + behavioral eval
+  kernel_viz_every: 500       # windows: K / Π / V montage PNGs + wandb images
+  kernel_viz_layers: [conv1, conv4, conv6]
+  checkpoint_every: 2500      # windows
+  outdir: runs/rl
+
+wandb:
+  enabled: true
+  # No default project — pass --wandb-project (use: rl_audiovis)
+  name: OVERRIDE_ME

@@ -1,0 +1,10 @@
+# Arm C — Π guidance, vision teaches audio (the test): the audio agent's
+# learning DYNAMICS are pulled toward the vision agent's on cross-rendered
+# shared transitions; behavior stays independent. Headline: do the policies /
+# paths converge (behavior/* metrics), and does K-CKA rise above arm A?
+_base_: base.yaml
+guidance:
+  loss:
+    - {name: cka_pi, weight: 1.0}
+wandb: {name: rl-armC-pi-guide-vision}
+train: {outdir: runs/rl-armC-pi-guide-vision}

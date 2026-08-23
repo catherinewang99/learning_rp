@@ -42,7 +42,16 @@ hypothetical update (second order). Nothing stateful, nothing in-place.
 3. **Offline prior distillation.** Bank a frozen guide's per-checkpoint
    summaries; optimize a target init (trainable=weights) or later a rule
    (trainable=rule) against the bank. `scripts/align.py`.
-4. **Environment track (planned — src/envs/).** ACI/cambrian maze navigation:
+4. **RL track (src/rl/ — ACTIVE).** Vision and audio agents independently
+   navigate separate MuJoCo arenas toward a goal that emits speech (louder /
+   cleaner nearer); coupling ONLY via plasticity-kernel alignment on the
+   teacher's cross-rendered window transitions, every 10 env steps, folded
+   into a minimal PPO update (same AdamW honesty machinery). Behavioral
+   convergence (action agreement / policy KL on a paired probe bank) is the
+   headline readout; K/Π/ΔK montages logged as images. Run:
+   `MUJOCO_GL=egl python scripts/rl_train.py --config
+   configs/rl/arm_c_pi_guide_vision.yaml --wandb-project rl_audiovis`.
+5. **Environment track (planned — src/envs/).** ACI/cambrian maze navigation:
    vision guide navigates, template/VLM captioner describes states, LM target
    follows. See src/envs/__init__.py for the planned seams.
 

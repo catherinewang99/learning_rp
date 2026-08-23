@@ -56,7 +56,7 @@ plasticity:
 train:
   steps: 20000
   eval_every: 200
-  checkpoint_every: 2000
+  checkpoint_every: 500       # fine enough to watch early kernel formation
   k_val_batches: 8
   outdir: runs/av
 
