@@ -32,7 +32,9 @@ class RLSide:
 
     def __init__(self, name: str, modality: str, arena: VecArena, probed,
                  optimizer_cfg: dict, ppo_cfg: dict, device: str = "cpu",
-                 sensor: AudioSensor | None = None, seed: int = 0):
+                 sensor: AudioSensor | None = None, seed: int = 0,
+                 cue_steps: int | None = None, phase_step: int | None = None,
+                 noise_id_base: int | None = None):
         self.name, self.modality, self.arena, self.sensor = name, modality, arena, sensor
         self.device = device
         self.probed = probed.to(device)
@@ -54,7 +56,23 @@ class RLSide:
         self.render_rng = np.random.default_rng(seed + 7)
 
         b = arena.cfg.num_envs
-        self.window_steps = sensor.cfg.window_steps if sensor is not None else 1
+        # Cue bookkeeping serves CROSS-RENDERING into the audio modality, so
+        # its geometry — rows kept per env (cue_steps) and clip samples per
+        # step (phase_step) — must come from the shared AUDIO config on EVERY
+        # side: a vision teacher has to hand the audio student real moving
+        # histories and honest clip phases, not 1-row stationary stubs with
+        # phase ticking by 1. Defaults (own sensor, else 1) only cover
+        # audio-only or unguided setups; pass both explicitly when this side
+        # can ever be a teacher.
+        self.window_steps = cue_steps if cue_steps is not None else (
+            sensor.cfg.window_steps if sensor is not None else 1)
+        self.phase_step = phase_step if phase_step is not None else (
+            sensor.step_samples if sensor is not None else 1)
+        # per-side id namespace: without an offset, a cross-rendered teacher
+        # step would reuse the exact noise chunk the student heard at the same
+        # step index of its own rollout
+        self.noise_id_base = (self.ROLLOUT_NOISE_BASE if noise_id_base is None
+                              else noise_id_base)
         self.env_steps = 0                      # per-env step clock (all envs step together)
         # per-env history of [distance, bearing, noise_id] cue rows (bearing
         # measured with that step's heading) — what the audio sensor renders
@@ -76,7 +94,7 @@ class RLSide:
         """[distance, bearing, noise_id]: the id is unique per (env, step) so
         this step's sensor noise is frozen — re-observing or cross-rendering
         the step reproduces the identical waveform chunk."""
-        noise_id = self.ROLLOUT_NOISE_BASE + self.env_steps * self.arena.cfg.num_envs + i
+        noise_id = self.noise_id_base + self.env_steps * self.arena.cfg.num_envs + i
         return [float(self.arena.dists()[i]),
                 bearing(self.arena.poses[i], self.arena.goals[i]),
                 float(noise_id)]
@@ -122,7 +140,7 @@ class RLSide:
             self.episode_len += 1
             self.env_steps += 1
             for i in range(b):
-                self.phase[i] += self.sensor.step_samples if self.sensor else 1
+                self.phase[i] += self.phase_step
                 if out["reset"][i]:
                     self.finished.append((self.env_steps, bool(out["done"][i]),
                                           float(self.episode_return[i]),
@@ -160,7 +178,7 @@ class RLSide:
         return self.arena.poses.copy()
 
     def hist_snapshot(self) -> np.ndarray:
-        """(B, W, 2) [distance, bearing] rows, oldest-padded."""
+        """(B, W, 3) [distance, bearing, noise_id] rows, oldest-padded."""
         w = self.window_steps
         rows = []
         for h in self.cue_hist:

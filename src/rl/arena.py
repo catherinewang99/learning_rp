@@ -33,6 +33,12 @@ class ArenaConfig:
     reward: dict = field(default_factory=lambda: {
         "step_penalty": -0.01, "shaping": 1.0, "reach_bonus": 10.0})
     seed: int = 0
+    # State-keyed vision masking (a WORLD property, not a sensor property):
+    # the mask is a pure function of the quantized (pose, goal) state, so every
+    # view of the same state — rollout, probe, cross-render, matched episode —
+    # is identically occluded, while different states get independent masks.
+    # dict keys: enabled, fraction, block, fill, quant_pos, quant_yaw_deg, seed
+    state_mask: dict | None = None
 
 
 # ---- pure kinematics / reward (no mujoco needed) ---------------------------
@@ -54,6 +60,42 @@ def bearing(pose: np.ndarray, goal: np.ndarray) -> float:
     to_goal = np.arctan2(goal[1] - pose[1], goal[0] - pose[0])
     b = to_goal - pose[2]
     return float(math.atan2(math.sin(b), math.cos(b)))
+
+
+def state_mask_for(pose: np.ndarray, goal: np.ndarray, hw: int, mask_cfg: dict) -> np.ndarray:
+    """(H, W) bool block mask, a PURE function of the quantized state.
+
+    Quantization defines "the same observation" for continuous states: within
+    a bucket (default 0.25 m position / 15 deg yaw / 0.25 m goal) the mask is
+    constant; crossing a bucket boundary re-rolls it independently (accepted
+    artifact: the occlusion "flickers" as the agent moves between buckets)."""
+    qp = float(mask_cfg.get("quant_pos", 0.25))
+    qy = math.radians(float(mask_cfg.get("quant_yaw_deg", 15.0)))
+    yaw = math.atan2(math.sin(pose[2]), math.cos(pose[2]))  # wrap to (-pi, pi]
+    key = [int(mask_cfg.get("seed", 0)),
+           int(math.floor(pose[0] / qp)) + 10_000,
+           int(math.floor(pose[1] / qp)) + 10_000,
+           int(math.floor((yaw + math.pi) / qy)) + 10_000,
+           int(math.floor(goal[0] / qp)) + 10_000,
+           int(math.floor(goal[1] / qp)) + 10_000]
+    rng = np.random.default_rng(key)
+    block = int(mask_cfg.get("block", 8))
+    grid = -(-hw // block)                      # ceil
+    coarse = rng.random((grid, grid)) < float(mask_cfg.get("fraction", 0.5))
+    return np.repeat(np.repeat(coarse, block, 0), block, 1)[:hw, :hw]
+
+
+def apply_state_mask(img: np.ndarray, pose: np.ndarray, goal: np.ndarray,
+                     mask_cfg: dict | None) -> np.ndarray:
+    """img (3, H, W) -> masked copy (fill = mid-gray by default: inside the
+    scene's value range, so blocks delete signal without adding a salient
+    out-of-distribution feature the way black would)."""
+    if not mask_cfg or not mask_cfg.get("enabled", False):
+        return img
+    mask = state_mask_for(np.asarray(pose), np.asarray(goal), img.shape[1], mask_cfg)
+    img = img.copy()
+    img[:, mask] = float(mask_cfg.get("fill", 0.5))
+    return img
 
 
 def reward_fn(dist_before: float, dist_after: float, reached: bool, cfg: ArenaConfig) -> float:
@@ -180,7 +222,8 @@ class VecArena:
         renderer = self._get_renderer()
         renderer.update_scene(data, camera="agent_cam")
         rgb = renderer.render().astype(np.float32) / 255.0
-        return np.transpose(rgb, (2, 0, 1))
+        return apply_state_mask(np.transpose(rgb, (2, 0, 1)), pose, goal,
+                                self.cfg.state_mask)
 
     def observe(self) -> torch.Tensor:
         """(B, 3, H, W) current camera observations."""

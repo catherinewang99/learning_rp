@@ -1,0 +1,9 @@
+# N-C rescue: INTACT AUDIO TEACHES DEGRADED VISION (Π). The compensation
+# claim: does vision_matched_success rise above the N-A control?
+_base_: mask_base.yaml
+guidance:
+  guided: [vision]
+  loss:
+    - {name: cka_pi, weight: 1.0}
+wandb: {name: rl-armC-pi-rescue-mask50}
+train: {outdir: runs/rl-armC-pi-rescue-mask50}

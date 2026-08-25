@@ -1,0 +1,5 @@
+# Severity calibration: N-A only, short run, fraction 0.25.
+_base_: mask_arm_a.yaml
+vision_mask: {fraction: 0.25}
+train: {windows: 5000, outdir: runs/rl-mask-calib25}
+wandb: {name: rl-mask-calib25}

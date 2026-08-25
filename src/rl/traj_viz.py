@@ -143,3 +143,26 @@ def plot_matched_paths(records: list, arena_cfg: ArenaConfig, out_path: str | Pa
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     return out_path
+
+
+def save_masked_examples(vision_side, out_path: str | Path, n: int = 6) -> Path:
+    """Render n example states through the vision path (mask applied at the
+    choke point) so every masked run documents what the agent actually sees."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    layouts = [vision_side.arena._sample_layout() for _ in range(n)]
+    fig, axes = plt.subplots(1, n, figsize=(2.2 * n, 2.4))
+    for ax, (pose, goal) in zip(np.atleast_1d(axes), layouts):
+        img = vision_side.arena.render_at(pose, goal)
+        ax.imshow(np.transpose(img, (1, 2, 0)))
+        ax.set_xticks([]); ax.set_yticks([])
+    fig.suptitle("vision observations under state-keyed masking", fontsize=9)
+    fig.tight_layout()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=140)
+    plt.close(fig)
+    return out_path

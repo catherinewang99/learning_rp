@@ -69,6 +69,8 @@ class FakeArena:
                 "dist_before": before, "dist_after": after}
 
     def render_at(self, pose, goal, *_):
+        from src.rl.arena import apply_state_mask
+
         hw = self.cfg.camera_hw
         rel = np.asarray(goal) - np.asarray(pose)[:2]
         img = np.zeros((3, hw, hw), dtype=np.float32)
@@ -76,7 +78,7 @@ class FakeArena:
         img[1] += np.tanh(rel[1])
         img[2] += 1.0 / (1.0 + np.linalg.norm(rel))
         img += 0.05 * np.sin(np.arange(hw))[None, None, :]  # spatial texture
-        return img
+        return apply_state_mask(img, pose, goal, self.cfg.state_mask)
 
     def observe(self):
         return torch.from_numpy(np.stack(
@@ -96,15 +98,21 @@ def make_sides(guided_needs_audio=True):
     torch.manual_seed(0)
     sensor = make_sensor()
     sides = {}
-    for name, in_ch, sens in (("vision", 3, None), ("audio", sensor.channels, sensor)):
+    for idx, (name, in_ch, sens) in enumerate(
+            (("vision", 3, None), ("audio", sensor.channels, sensor))):
         input_hw = (16, 16) if name == "vision" else (16, sensor.frames)
         net = ActorCritic(in_channels=in_ch, input_hw=input_hw,
                           widths=(8, 16), pool_after=(1, 2), trunk_dim=32)
         probed = ProbedModel(net, layer_types=[nn.Conv2d], drop_last=False)
         arena = FakeArena(ArenaConfig(num_envs=2, horizon=30, camera_hw=16,
                                       seed=0 if name == "vision" else 1))
+        # mirror build_sides: shared audio cue geometry on both sides (either
+        # side can teach), disjoint per-side noise-id namespaces
         sides[name] = RLSide(name, name, arena, probed, OPT, PPO, device="cpu",
-                             sensor=sens, seed=0)
+                             sensor=sens, seed=0,
+                             cue_steps=sensor.cfg.window_steps,
+                             phase_step=sensor.step_samples,
+                             noise_id_base=1_000_000 + idx * 100_000_000)
     return sides
 
 
@@ -396,3 +404,113 @@ def test_stats_bypass_preserves_amplitude_cue():
     assert stats_rel > 2 * conv_rel
     # trunk input dim includes the stats block
     assert net.trunk[0].in_features == 16 * 4 * 5 + 2 * (2 + 20)
+
+
+def test_state_mask_is_a_world_property():
+    """Same state -> identical mask, everywhere; different states -> different
+    masks; within-bucket moves keep the mask; fraction ~ requested."""
+    from src.rl.arena import state_mask_for
+
+    cfg = {"enabled": True, "fraction": 0.5, "block": 4, "fill": 0.5,
+           "quant_pos": 0.25, "quant_yaw_deg": 15.0, "seed": 9}
+    pose = np.array([1.0, -0.5, 0.3])
+    goal = np.array([-1.2, 2.0])
+    m1 = state_mask_for(pose, goal, 32, cfg)
+    m2 = state_mask_for(pose.copy(), goal.copy(), 32, cfg)
+    assert np.array_equal(m1, m2)                       # deterministic
+    within = state_mask_for(pose + [0.05, 0.05, 0.01], goal, 32, cfg)
+    assert np.array_equal(m1, within)                   # same bucket
+    across = state_mask_for(pose + [0.5, 0.0, 0.0], goal, 32, cfg)
+    assert not np.array_equal(m1, across)               # new bucket, new mask
+    other_goal = state_mask_for(pose, goal + [0.5, 0.0], 32, cfg)
+    assert not np.array_equal(m1, other_goal)           # goal is part of state
+    assert abs(m1.mean() - 0.5) < 0.2                   # roughly the fraction
+
+
+def test_state_mask_flows_through_probes_and_rollout():
+    """The choke point covers every vision render: probe-bank and rollout
+    observations carry the fill value at masked positions, consistently."""
+    torch.manual_seed(0)
+    mask_cfg = {"enabled": True, "fraction": 0.6, "block": 4, "fill": 0.5, "seed": 3}
+    sensor = make_sensor()
+    sides = {}
+    for name, in_ch, sens in (("vision", 3, None), ("audio", sensor.channels, sensor)):
+        input_hw = (16, 16) if name == "vision" else (16, sensor.frames)
+        net = ActorCritic(in_channels=in_ch, input_hw=input_hw,
+                          widths=(8, 16), pool_after=(1, 2), trunk_dim=32)
+        probed = ProbedModel(net, layer_types=[nn.Conv2d], drop_last=False)
+        arena = FakeArena(ArenaConfig(num_envs=2, horizon=30, camera_hw=16,
+                                      seed=0 if name == "vision" else 1,
+                                      state_mask=mask_cfg if name == "vision" else None))
+        sides[name] = RLSide(name, name, arena, probed, OPT, PPO, device="cpu",
+                             sensor=sens, seed=0)
+    probe_bank = build_probe_bank(sides, n=6, seed=3)
+    vision_probes = probe_bank["probes"]["vision"]
+    frac_at_fill = float((vision_probes == 0.5).float().mean())
+    assert frac_at_fill > 0.3                           # masked blocks present
+    # audio probes untouched by the vision mask machinery
+    assert probe_bank["probes"]["audio"].shape[0] == 6
+    # rollout obs from the masked arena also carry the fill
+    obs = sides["vision"].observe()
+    assert float((obs == 0.5).float().mean()) > 0.3
+    # same state renders the same masked image twice
+    a1 = sides["vision"].arena.render_at(np.array([0.5, 0.5, 0.1]), np.array([2.0, 2.0]))
+    a2 = sides["vision"].arena.render_at(np.array([0.5, 0.5, 0.1]), np.array([2.0, 2.0]))
+    assert np.array_equal(a1, a2)
+
+
+def test_noise_model_keeps_level_cue_monotone():
+    """The distance cue: mean log-mel level must fall MONOTONICALLY with d
+    (the old sigma = base + slope*d had a minimum at d~2.5 and rose again —
+    ambiguous level, untrainable), and the binaural L-R difference must stay
+    well clear of draw noise at long range."""
+    sensor = make_sensor()          # default AudioConfig noise: constant sigma
+    assert sensor.cfg.noise_slope == 0.0
+    levels = [float(np.mean([sensor.observe_stationary(
+                  d, 0.0, noise_offset=1000 * i).mean() for i in range(4)]))
+              for d in (0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0)]
+    assert all(a > b for a, b in zip(levels, levels[1:])), levels
+    # ILD at range: separation between left- and right-source observations
+    # dominates the draw-to-draw spread
+    left = [float((o := sensor.observe_stationary(6.0, np.pi / 2,
+                   noise_offset=50_000 + 1000 * i))[0].mean() - o[1].mean())
+            for i in range(6)]
+    right = [float((o := sensor.observe_stationary(6.0, -np.pi / 2,
+                    noise_offset=90_000 + 1000 * i))[0].mean() - o[1].mean())
+             for i in range(6)]
+    sep = abs(np.mean(left) - np.mean(right))
+    assert sep > 10 * (np.std(left) + 1e-9)
+
+
+def test_cross_render_uses_full_teacher_history():
+    """Finding-3 regression: a VISION teacher must hand the audio student full
+    W-row moving cue histories with honest clip phases — not 1-row stationary
+    stubs with phase ticking by 1 — and cross-rendering must be deterministic
+    and distinct from a stationary render of the endpoint."""
+    from src.rl.cross_render import render_state
+
+    sides = make_sides()
+    vision, audio = sides["vision"], sides["audio"]
+    w = audio.sensor.cfg.window_steps
+    assert vision.window_steps == w                      # shared cue geometry
+    window = vision.collect_window(t_len=w + 2)
+    assert window["cue_hist"].shape[2:] == (w, 3)        # full W rows, 3 cols
+    # phases advance by real audio samples on the sensor-less side too
+    deltas = np.diff(window["phase"][:, 0].numpy())
+    assert (deltas == audio.sensor.step_samples).all()
+    # per-side noise-id namespaces are disjoint
+    assert vision.noise_id_base != audio.noise_id_base
+    # pick a step late enough that the history is genuinely moving
+    t, b = w, 0
+    hist = window["cue_hist"][t, b].numpy()
+    obs = render_state("audio", audio, window["pose"][t, b], window["goal"][t, b],
+                       hist, window["phase"][t, b])
+    again = render_state("audio", audio, window["pose"][t, b], window["goal"][t, b],
+                         hist, window["phase"][t, b])
+    assert torch.equal(obs, again)                       # deterministic re-render
+    if len(np.unique(hist[:, 0])) > 1:                   # moving history...
+        frozen = np.column_stack([np.full(w, hist[-1, 0]), np.full(w, hist[-1, 1]),
+                                  hist[:, 2]])
+        stationary = render_state("audio", audio, window["pose"][t, b],
+                                  window["goal"][t, b], frozen, window["phase"][t, b])
+        assert not torch.equal(obs, stationary)          # ...is not stationary

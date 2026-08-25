@@ -19,8 +19,12 @@ audio:
   window_steps: 8             # spectrogram time axis spans this many past env steps
   n_mels: 64
   ref_distance: 0.75          # gain = ref / (ref + d): louder near the goal
-  noise_base: 0.005
-  noise_slope: 0.02           # noisier far from the goal
+  noise_base: 0.01            # CONSTANT ambient noise sigma (difficulty dial:
+                              #   0.005 easy ... 0.02 hard, both trainable)
+  noise_slope: 0.0            # keep 0 — a distance-scaled sigma makes total
+                              #   energy NON-monotone in d (level cue ambiguous,
+                              #   gradient wrong from spawn) and drowns the ILD
+                              #   at range; SNR still falls with d via the gain
   binaural: true              # 2-ch (L, R): head-shadow ILD + front bias give
   shadow_gain: 0.4            #   instantaneous direction; false = mono
   front_gain: 0.2             #   loudness-trend-only ablation

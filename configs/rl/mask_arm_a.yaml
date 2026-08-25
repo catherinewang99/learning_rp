@@ -1,0 +1,6 @@
+# N-A control: degraded vision + intact audio, NO coupling. The raw cost of
+# the deficit (vs clean arm A) and the rescue baseline.
+_base_: mask_base.yaml
+guidance: {guided: [], loss: []}
+wandb: {name: rl-armA-mask50}
+train: {outdir: runs/rl-armA-mask50}

@@ -1,0 +1,12 @@
+# Sensory-compensation family: vision degraded by STATE-KEYED block masking
+# (a world property: same state -> same mask everywhere; different states ->
+# independent masks; see arena.state_mask_for). Audio untouched.
+_base_: base.yaml
+vision_mask:
+  enabled: true
+  fraction: 0.5               # calibrate via mask_calib_* before the real arms
+  block: 8                    # 8x8-pixel blocks on the 64x64 frame
+  fill: 0.5                   # mid-gray: inside the scene's value range
+  quant_pos: 0.25             # bucket sizes defining "the same observation"
+  quant_yaw_deg: 15.0
+  seed: 123                   # same masks across all arms of the family

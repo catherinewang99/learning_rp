@@ -1,0 +1,9 @@
+# N-C mutual: co-adaptation under the deficit. Also watch whether the deficit
+# LEAKS into audio (audio_matched_success vs the N-A control).
+_base_: mask_base.yaml
+guidance:
+  guided: [audio, vision]
+  loss:
+    - {name: cka_pi, weight: 1.0}
+wandb: {name: rl-armC-pi-mutual-mask50}
+train: {outdir: runs/rl-armC-pi-mutual-mask50}

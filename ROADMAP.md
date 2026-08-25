@@ -16,6 +16,14 @@ transitions every 10-step window. Headline: do policies/paths converge
 - [ ] Server shakeout: arm A few hundred windows (EGL rendering, wall-clock,
       wandb project rl_audiovis), then micro arm C for memory
 - [ ] Launch arms; watch behavior/action_dist + behavior/policy_kl_sym vs arm A
+- [x] Sensory-compensation family (configs/rl/mask_*): vision degraded by
+      STATE-KEYED block masking (world property: same state -> same mask via
+      quantized-state-seeded RNG at the render choke point; mid-gray fill;
+      audio untouched). Arms: N-A control / N-C rescue (audio teaches vision,
+      Π) / N-C mutual; calib_25/75 short runs to pick the fraction.
+- [ ] Run mask calibration (mask_calib_25/50-as-armA/75), pick fraction,
+      launch mask arms; headline: vision_matched_success N-C-rescue vs N-A;
+      watch audio_matched_success in mutual for deficit leakage
 - [x] Binaural audio (head-shadow ILD + front bias, 2-ch spectrogram; mono
       kept as `audio.binaural: false` ablation) — cue histories are (d, beta)
 - [ ] v0 simplifications to revisit: stationary

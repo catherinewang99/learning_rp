@@ -1,9 +1,16 @@
 """Audio sensor: a person talking at the goal, heard from the agent's position.
 
 The goal loops a speech clip. What the agent receives at distance d is
-    y = clip_segment * gain(d) + noise(d),   gain = ref/(ref + d),
-    noise sigma = noise_base + noise_slope * d
-— louder AND cleaner near the goal, softer and noisier far away.
+    y = clip_segment * gain(d) + noise,      gain = ref/(ref + d),
+    noise sigma = noise_base + noise_slope * d   (slope 0 by default)
+— louder near the goal, softer far away; with CONSTANT ambient noise, SNR
+falls with distance automatically because the signal gain does. sigma must
+NOT grow with d (the old default slope=0.02): total received energy then has
+a MINIMUM at d≈2.5 and rises again with distance, so the level cue is
+ambiguous and points the wrong way from spawn (min separation 2 m), and the
+distance-scaled per-ear noise drowns the ILD direction cue at range —
+measured to make PPO untrainable (flat ~5% success; monotone-level variants
+train to 60-100%). noise_base is the difficulty dial.
 
 One observation per env step: the log-mel spectrogram (C, n_mels, F) of the
 audio received over the LAST `window_steps` steps of the trajectory.
@@ -40,8 +47,11 @@ class AudioConfig:
     n_fft: int = 512
     hop: int = 256
     ref_distance: float = 0.75        # gain = ref / (ref + d)
-    noise_base: float = 0.005
-    noise_slope: float = 0.02         # sigma grows with distance
+    noise_base: float = 0.01          # CONSTANT ambient sigma — the difficulty
+    #   dial (measured: 0.005 -> fast PPO learning, 0.02 -> slower but works)
+    noise_slope: float = 0.0          # keep 0: sigma growing with d makes the
+    #   level cue NON-monotone and kills the ILD at range (see module docstring);
+    #   nonzero only as an explicit ablation of the old broken model
     binaural: bool = True             # 2-channel (L, R) via head-shadow ILD;
     #   False = the mono loudness-trend-only ablation
     shadow_gain: float = 0.4          # ILD strength: ear gains scale by

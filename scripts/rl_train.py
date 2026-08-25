@@ -31,7 +31,8 @@ from torch import nn
 
 
 def build_sides(cfg: dict, device: str) -> dict[str, RLSide]:
-    arena_cfg_v = ArenaConfig(**cfg["arena"], seed=cfg["seed"])
+    mask_cfg = cfg.get("vision_mask")   # state-keyed occlusion, VISION ONLY
+    arena_cfg_v = ArenaConfig(**cfg["arena"], seed=cfg["seed"], state_mask=mask_cfg)
     arena_cfg_a = ArenaConfig(**cfg["arena"], seed=cfg["seed"] + 1000)
     audio_cfg = AudioConfig(**{k: v for k, v in cfg["audio"].items()})
     sensor = AudioSensor(audio_cfg, seed=cfg["seed"] + 5)
@@ -39,18 +40,25 @@ def build_sides(cfg: dict, device: str) -> dict[str, RLSide]:
 
     hw = cfg["arena"]["camera_hw"]
     sides = {}
-    for name, in_ch, input_hw, arena_cfg, sens in (
+    for idx, (name, in_ch, input_hw, arena_cfg, sens) in enumerate((
         ("vision", 3, (hw, hw), arena_cfg_v, None),
         ("audio", sensor.channels, (audio_cfg.n_mels, sensor.frames),
          arena_cfg_a, sensor),   # 2 channels if binaural
-    ):
+    )):
         net = ActorCritic(in_channels=in_ch, input_hw=input_hw, widths=widths,
                           trunk_dim=cfg["model"]["trunk_dim"],
                           stats_bypass=cfg["model"].get("stats_bypass", True))
         probed = ProbedModel(net, layer_types=[nn.Conv2d], drop_last=False)
         sides[name] = RLSide(name, name, VecArena(arena_cfg), probed,
                              optimizer_cfg=cfg["optimizer"], ppo_cfg=cfg["ppo"],
-                             device=device, sensor=sens, seed=cfg["seed"])
+                             device=device, sensor=sens, seed=cfg["seed"],
+                             # cue geometry from the SHARED audio config on
+                             # both sides, so either side can teach: full
+                             # W-row histories + honest clip phases
+                             cue_steps=audio_cfg.window_steps,
+                             phase_step=sensor.step_samples,
+                             # disjoint per-side noise-id namespaces
+                             noise_id_base=1_000_000 + idx * 100_000_000)
     return sides
 
 
@@ -78,6 +86,11 @@ def main():
     (outdir / "config.yaml").write_text(yaml.safe_dump(cfg))
 
     sides = build_sides(cfg, device)
+    if cfg.get("vision_mask", {}) and cfg["vision_mask"].get("enabled", False):
+        from src.rl.traj_viz import save_masked_examples
+
+        path = save_masked_examples(sides["vision"], outdir / "vision_mask_examples.png")
+        log.log_image("vision_mask/examples", path)
     plast = cfg["plasticity"]
     probe_bank = build_probe_bank(sides, plast["probe_size"], cfg["seed"] + 11)
     eval_bank = build_eval_transitions(
