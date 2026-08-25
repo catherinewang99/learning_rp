@@ -40,7 +40,8 @@ class RLSide:
         self.buffers = {k: v.to(device) for k, v in probed.buffers_dict().items()}
         self.task = make_ppo_task(ppo_cfg.get("clip_coef", 0.2),
                                   ppo_cfg.get("value_coef", 0.5),
-                                  ppo_cfg.get("entropy_coef", 0.01))
+                                  ppo_cfg.get("entropy_coef", 0.01),
+                                  ppo_cfg.get("mean_reg", 1e-3))
         opt = optimizer_cfg
         self.rule = AdamWRule(lr=opt["lr"], betas=tuple(opt.get("betas", (0.9, 0.999))),
                               eps=opt.get("eps", 1e-8),
@@ -54,17 +55,31 @@ class RLSide:
 
         b = arena.cfg.num_envs
         self.window_steps = sensor.cfg.window_steps if sensor is not None else 1
-        # per-env history of [distance, bearing] cue rows (bearing measured
-        # with that step's heading) — what the audio sensor renders from
+        self.env_steps = 0                      # per-env step clock (all envs step together)
+        # per-env history of [distance, bearing, noise_id] cue rows (bearing
+        # measured with that step's heading) — what the audio sensor renders
+        # from; the id freezes that step's sensor noise (must init AFTER
+        # env_steps: _cue reads the clock)
         self.cue_hist = [[self._cue(i)] for i in range(b)]
         self.phase = np.zeros(b, dtype=np.int64)
         self.episode_return = np.zeros(b)
-        self.finished_returns: list[float] = []
-        self.finished_success: list[bool] = []
+        self.episode_len = np.zeros(b, dtype=np.int64)
+        # (completion_step, success, return, length) per finished episode.
+        # NOTE the length bias in any completed-episode statistic: short
+        # (successful) episodes recycle faster and are over-represented; the
+        # unbiased uniform-over-layouts measure is behavior/*_matched_success.
+        self.finished: list[tuple[int, bool, float, int]] = []
+
+    ROLLOUT_NOISE_BASE = 1_000_000   # id ranges: rollout / probes / eval / paths
 
     def _cue(self, i: int) -> list[float]:
+        """[distance, bearing, noise_id]: the id is unique per (env, step) so
+        this step's sensor noise is frozen — re-observing or cross-rendering
+        the step reproduces the identical waveform chunk."""
+        noise_id = self.ROLLOUT_NOISE_BASE + self.env_steps * self.arena.cfg.num_envs + i
         return [float(self.arena.dists()[i]),
-                bearing(self.arena.poses[i], self.arena.goals[i])]
+                bearing(self.arena.poses[i], self.arena.goals[i]),
+                float(noise_id)]
 
     def detached_params(self):
         return {k: v.detach() for k, v in self.params.items()}
@@ -104,12 +119,16 @@ class RLSide:
             act_np = action.cpu().numpy()
             out = self.arena.step(act_np)
             self.episode_return += out["reward"]
+            self.episode_len += 1
+            self.env_steps += 1
             for i in range(b):
                 self.phase[i] += self.sensor.step_samples if self.sensor else 1
                 if out["reset"][i]:
-                    self.finished_returns.append(float(self.episode_return[i]))
-                    self.finished_success.append(bool(out["done"][i]))
+                    self.finished.append((self.env_steps, bool(out["done"][i]),
+                                          float(self.episode_return[i]),
+                                          int(self.episode_len[i])))
                     self.episode_return[i] = 0.0
+                    self.episode_len[i] = 0
                     self.cue_hist[i] = [self._cue(i)]
                 else:
                     self.cue_hist[i].append(self._cue(i))
@@ -145,15 +164,34 @@ class RLSide:
         w = self.window_steps
         rows = []
         for h in self.cue_hist:
-            c = np.asarray(h, dtype=np.float64).reshape(-1, 2)
+            c = np.asarray(h, dtype=np.float64).reshape(-1, 3)
             if len(c) < w:
                 c = np.concatenate([np.repeat(c[:1], w - len(c), axis=0), c])
             rows.append(c[-w:])
         return np.stack(rows)
 
+    def episode_stats(self, horizon_steps: int) -> dict[str, float]:
+        """Stats over episodes completed within the last ``horizon_steps`` env
+        steps — time-windowed, so slow failures aren't crowded out of a
+        fixed-count buffer by fast successes (they still complete less often;
+        see the bias note above; matched_success is the unbiased metric)."""
+        self.finished = self.finished[-5000:]
+        recent = [f for f in self.finished if f[0] > self.env_steps - horizon_steps]
+        if not recent:
+            return {}
+        return {
+            "success_rate": float(np.mean([f[1] for f in recent])),
+            "episode_return": float(np.mean([f[2] for f in recent])),
+            "episode_len": float(np.mean([f[3] for f in recent])),
+            "episodes_recent": float(len(recent)),
+        }
+
     # -- the real update's loss (vectorized == mean per-transition task) ------
 
-    def window_ppo_loss(self, window: dict, params) -> torch.Tensor:
+    def window_ppo_loss(self, window: dict, params):
+        """Returns (total loss WITH graph, detached component parts dict:
+        policy_loss / value_loss / entropy / saturation_penalty / clip_frac —
+        unweighted, so config weights can be reasoned about separately)."""
         t_len, b = window["reward"].shape
         obs = window["obs"].reshape(t_len * b, *window["obs"].shape[2:]).to(self.device)
         y = {"action": window["action"].reshape(t_len * b, -1).to(self.device),
@@ -162,7 +200,7 @@ class RLSide:
              "value_target": window["returns"].reshape(-1).to(self.device)}
         from ..data.experiences import Experience
 
-        return self.task(self.probed, params, Experience(x=obs, y=y), self.buffers)
+        return self.task.components(self.probed, params, Experience(x=obs, y=y), self.buffers)
 
 
 class RLTrainer:
@@ -171,7 +209,9 @@ class RLTrainer:
                  gamma: float = 0.99, gae_lambda: float = 0.95,
                  probe_bank: dict | None = None, eval_bank: dict | None = None,
                  kernel_fn=linear_gram, use_checkpoint: bool = True,
-                 device: str = "cpu", seed: int = 0, log_fn=None):
+                 device: str = "cpu", seed: int = 0, log_fn=None,
+                 stats_horizon: int = 2000,     # env steps for episode stats
+                 n_matched_layouts: int = 8):   # fixed layouts for path eval
         assert set(guided) <= set(sides)
         self.sides, self.guided, self.align_loss = sides, guided, align_loss
         self.window_len, self.m_per_window = window_len, m_per_window
@@ -182,10 +222,13 @@ class RLTrainer:
         self.rng = np.random.default_rng(seed)
         self.needs = getattr(align_loss, "needs", {"K", "V", "Pi"}) if guided else set()
         self.window_count = 0
+        self.stats_horizon = stats_horizon
         # fixed matched layouts (same spawn+goal for BOTH agents) for the
-        # path-divergence eval and the 2D board plots
+        # path-divergence eval and the 2D board plots — the unbiased
+        # uniform-over-layouts success measure
         any_side = next(iter(sides.values()))
-        self.matched_layouts = [any_side.arena._sample_layout() for _ in range(4)]
+        self.matched_layouts = [any_side.arena._sample_layout()
+                                for _ in range(n_matched_layouts)]
 
     def _teacher_of(self, name: str) -> str:
         others = [s for s in self.sides if s != name]
@@ -214,15 +257,19 @@ class RLTrainer:
             w["returns"] = ret
             windows[name] = w
             metrics[f"{name}/reward_mean"] = float(w["reward"].mean())
+            metrics.update({f"{name}/{k}": v
+                            for k, v in side.episode_stats(self.stats_horizon).items()})
             # policy-health diagnostics (saturation was invisible before):
             # |pre-tanh mean| large => near-deterministic railed actions
             metrics[f"{name}/policy_mean_abs"] = float(w["pmean"].abs().mean())
             metrics[f"{name}/action_sat_frac"] = float(
                 (w["action"].abs() > 0.95).float().mean())
             metrics[f"{name}/log_std"] = float(side.params["log_std"].detach().mean())
-            if side.finished_returns:
-                metrics[f"{name}/episode_return"] = float(np.mean(side.finished_returns[-20:]))
-                metrics[f"{name}/success_rate"] = float(np.mean(side.finished_success[-20:]))
+            # entropy of the EXECUTED dist, estimated from collection samples
+            # (valid as a metric; useless as a loss — E[score] = 0 on stored
+            # actions). Plummeting while log_std holds = mean-driven collapse.
+            metrics[f"{name}/exec_entropy_est"] = float(-w["logp"].mean())
+
 
         # teacher summaries (detached) from their OWN windows
         summaries_detached: dict[str, tuple] = {}
@@ -236,8 +283,9 @@ class RLTrainer:
 
         for name, side in self.sides.items():
             side.sync_rule_state()
-            task_loss = side.window_ppo_loss(windows[name], side.params)
+            task_loss, parts = side.window_ppo_loss(windows[name], side.params)
             metrics[f"{name}/ppo_loss"] = float(task_loss)
+            metrics.update({f"{name}/{k}": v for k, v in parts.items()})
             total = task_loss
 
             if name in self.guided:

@@ -123,6 +123,7 @@ def main():
         stratify_by=plast.get("stratify_by"),
         use_checkpoint=plast.get("checkpoint", False),
         cka_every=plast.get("cka_every", 0),
+        normalize_v=plast.get("normalize_v", False),
     )
 
     # ---- loop ----

@@ -97,7 +97,9 @@ def make_sides(guided_needs_audio=True):
     sensor = make_sensor()
     sides = {}
     for name, in_ch, sens in (("vision", 3, None), ("audio", sensor.channels, sensor)):
-        net = ActorCritic(in_channels=in_ch, widths=(8, 16), pool_after=(1, 2), trunk_dim=32)
+        input_hw = (16, 16) if name == "vision" else (16, sensor.frames)
+        net = ActorCritic(in_channels=in_ch, input_hw=input_hw,
+                          widths=(8, 16), pool_after=(1, 2), trunk_dim=32)
         probed = ProbedModel(net, layer_types=[nn.Conv2d], drop_last=False)
         arena = FakeArena(ArenaConfig(num_envs=2, horizon=30, camera_hw=16,
                                       seed=0 if name == "vision" else 1))
@@ -188,6 +190,12 @@ def test_arm_a_independent_runs():
     metrics = trainer.window()
     assert np.isfinite(metrics["vision/ppo_loss"]) and np.isfinite(metrics["audio/ppo_loss"])
     assert not any("align" in k for k in metrics)
+    # loss components logged separately (unweighted) per side
+    for name in ("vision", "audio"):
+        for part in ("policy_loss", "value_loss", "entropy",
+                     "saturation_penalty", "clip_frac"):
+            assert np.isfinite(metrics[f"{name}/{part}"]), part
+    assert 0.0 <= metrics["vision/clip_frac"] <= 1.0
 
 
 def test_arm_c_pi_guidance_runs_and_moves_student():
@@ -229,7 +237,7 @@ def test_matched_paths_and_divergence(tmp_path):
     metrics, records = trainer.path_eval(max_steps=15)
     assert np.isfinite(metrics["behavior/path_divergence"])
     assert 0.0 <= metrics["behavior/vision_matched_success"] <= 1.0
-    assert len(records) == 4
+    assert len(records) == 8  # n_matched_layouts default
     for rec in records:
         for name in ("vision", "audio"):
             assert rec["episodes"][name]["path"].shape[1] == 2
@@ -262,3 +270,129 @@ def test_squashed_policy_consistency_and_diagnostics():
         assert np.isfinite(metrics[f"{name}/policy_mean_abs"])
         assert 0.0 <= metrics[f"{name}/action_sat_frac"] <= 1.0
         assert np.isfinite(metrics[f"{name}/log_std"])
+
+
+def test_mean_reg_penalizes_saturation():
+    """With advantage 0 and a perfect value target, the ONLY active loss term
+    difference between a centered and a far-out policy mean is the saturation
+    penalty — the far-out mean must cost more, and its gradient must point
+    back toward zero."""
+    from src.data.experiences import Experience
+    from src.rl.tasks import make_ppo_task
+    from src.rl.policy import squashed_logp_entropy
+
+    torch.manual_seed(0)
+    net = ActorCritic(in_channels=3, input_hw=(16, 16), widths=(8, 16),
+                      pool_after=(1, 2), trunk_dim=32)
+    probed = ProbedModel(net, layer_types=[nn.Conv2d], drop_last=False)
+    task = make_ppo_task(mean_reg=1e-2)
+    x = torch.randn(1, 3, 16, 16)
+
+    def loss_at_bias(bias):
+        params = {k: v.detach().clone() for k, v in probed.params().items()}
+        params["actor_mean.bias"] = torch.tensor([bias, bias]).requires_grad_(True)
+        mean, log_std, value = probed.forward_output(params, x)
+        action = torch.tanh(mean).detach()          # on-policy-ish stored action
+        logp, _ = squashed_logp_entropy(mean, log_std, action)
+        exp = Experience(x=x, y={"action": action, "logp_old": logp.detach(),
+                                 "advantage": torch.zeros(1),
+                                 "value_target": value.detach()})
+        loss = task(probed, params, exp)
+        grad = torch.autograd.grad(loss, params["actor_mean.bias"])[0]
+        return float(loss), grad
+
+    loss_far, grad_far = loss_at_bias(4.0)
+    loss_ctr, _ = loss_at_bias(0.0)
+    assert loss_far > loss_ctr
+    assert (grad_far > 0).all()   # pushes the +4.0 bias back down
+
+    trainer = make_trainer([], [])
+    metrics = trainer.window()
+    assert np.isfinite(metrics["vision/exec_entropy_est"])
+
+
+def test_time_windowed_episode_stats():
+    """Episode stats are time-windowed and carry length/count context; the
+    fast-success crowding of a last-N-episodes buffer is what this replaces."""
+    trainer = make_trainer([], [])
+    side = trainer.sides["vision"]
+    # synthetic history: at env-step clock 100, a slow failure (len 200,
+    # finished at step 40) and fast successes (len 25) within the window
+    side.env_steps = 300
+    side.finished = [(40, False, -2.0, 200)] + [
+        (260 + i, True, 8.0, 25) for i in range(4)]
+    stats = side.episode_stats(horizon_steps=100)
+    assert stats["episodes_recent"] == 4.0          # the old failure aged out
+    assert stats["success_rate"] == 1.0
+    stats_all = side.episode_stats(horizon_steps=1000)
+    assert stats_all["episodes_recent"] == 5.0      # includes the slow failure
+    assert abs(stats_all["success_rate"] - 0.8) < 1e-9
+    assert abs(stats_all["episode_len"] - (200 + 4 * 25) / 5) < 1e-9
+
+    # trainer produces the keys once real episodes finish
+    for _ in range(8):                              # horizon 30, window 5
+        metrics = trainer.window()
+    assert "vision/episodes_recent" in metrics
+    assert 0.0 <= metrics["vision/success_rate"] <= 1.0
+    assert metrics["vision/episode_len"] > 0
+
+
+def test_flatten_preserves_spatial_information():
+    """The trunk input must distinguish mirrored scenes (goal left vs right);
+    GAP's per-channel spatial mean is nearly blind to the flip."""
+    torch.manual_seed(0)
+    net = ActorCritic(in_channels=3, input_hw=(16, 16), widths=(8, 16),
+                      pool_after=(1, 2), trunk_dim=32, stats_bypass=False)
+    x = torch.zeros(1, 3, 16, 16)
+    x[:, :, 6:10, 2:5] = 1.0                       # bright blob on the LEFT
+    x_flip = torch.flip(x, dims=[3])               # same blob on the RIGHT
+    with torch.no_grad():
+        f1, f2 = net.encoder(x), net.encoder(x_flip)
+        # GAP equivalent: per-channel spatial means of the pre-flatten map
+        hw = 4 * 4  # 16x16 after two pools
+        g1 = f1.view(1, -1, hw).mean(-1)
+        g2 = f2.view(1, -1, hw).mean(-1)
+    diff_flat = float((f1 - f2).norm())
+    diff_gap = float((g1 - g2).norm()) * hw ** 0.5   # scale-matched
+    assert diff_flat > 3 * diff_gap                  # position survives flatten
+    # trunk dim follows the modality's spatial size
+    assert net.trunk[0].in_features == 16 * 4 * 4
+
+
+def test_audio_past_is_frozen_across_overlapping_windows():
+    """The same physical step re-renders with the IDENTICAL waveform chunk:
+    window t+1's first W-1 chunks == window t's last W-1 chunks."""
+    sensor = make_sensor()          # W = 4
+    S = sensor.step_samples
+    dists = np.array([3.0, 2.5, 2.0, 1.5, 1.0])
+    betas = np.array([0.3, 0.2, 0.1, 0.0, -0.1])
+    ids = np.arange(5, dtype=np.float64) + 42
+    cues_t = np.column_stack([dists[:4], betas[:4], ids[:4]])
+    cues_t1 = np.column_stack([dists[1:], betas[1:], ids[1:]])
+    w_t = sensor.received_window(cues_t, phase=0)
+    w_t1 = sensor.received_window(cues_t1, phase=S)   # window slid by one step
+    assert np.allclose(w_t[:, S:], w_t1[:, :3 * S])   # shared past identical
+    # and re-rendering the same window is bit-identical (no rng state)
+    assert np.allclose(w_t, sensor.received_window(cues_t, phase=0))
+
+
+def test_stats_bypass_preserves_amplitude_cue():
+    """GN-normalized conv features are nearly invariant to a common additive
+    offset (log-domain loudness); the raw-input stats bypass is not."""
+    torch.manual_seed(0)
+    net = ActorCritic(in_channels=2, input_hw=(16, 20), widths=(8, 16),
+                      pool_after=(1, 2), trunk_dim=32, stats_bypass=True)
+    x = torch.randn(1, 2, 16, 20)
+    x_loud = x + 0.7                                # uniform log-domain gain shift
+    with torch.no_grad():
+        f, f_loud = net.encoder(x), net.encoder(x_loud)
+        s_, s_loud = net._input_stats(x), net._input_stats(x_loud)
+    # conv+GN attenuates the offset...
+    conv_rel = float((f - f_loud).norm() / (f.norm() + 1e-8))
+    # ...while the bypass carries it exactly (per-channel means shift by 0.7)
+    c = x.shape[1]
+    assert torch.allclose(s_loud[:, :c] - s_[:, :c], torch.full((1, c), 0.7), atol=1e-5)
+    stats_rel = float((s_ - s_loud).norm() / (s_.norm() + 1e-8))
+    assert stats_rel > 2 * conv_rel
+    # trunk input dim includes the stats block
+    assert net.trunk[0].in_features == 16 * 4 * 5 + 2 * (2 + 20)

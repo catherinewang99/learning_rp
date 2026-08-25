@@ -79,3 +79,8 @@ def load_run(run_dir: str | Path, checkpoint: str | None = None, device: str = "
         side.sync_rule_state()  # rule sees the restored moments
         sides[name] = side
     return cfg, sides, bank, KERNEL_REGISTRY[plast.get("kernel", "linear")]
+
+
+def run_normalize_v(cfg: dict) -> bool:
+    """The run's Π-normalization convention (for post-hoc measurement parity)."""
+    return bool(cfg["plasticity"].get("normalize_v", False))

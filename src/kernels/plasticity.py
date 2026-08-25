@@ -43,9 +43,18 @@ def response_batch(
     return k0, v
 
 
-def plasticity_kernel(v: torch.Tensor) -> torch.Tensor:
-    """Π = (vec V)(vec V)ᵀ over experiences. v: (m, n, n) -> (m, m)."""
+def plasticity_kernel(v: torch.Tensor, normalize: bool = False) -> torch.Tensor:
+    """Π = (vec V)(vec V)ᵀ over experiences. v: (m, n, n) -> (m, m).
+
+    normalize=True builds Π from unit-Frobenius V̂ (the TTU-style per-sample
+    row normalization applied to plasticity's "samples" = experiences):
+    Π becomes a cosine kernel — unit diagonal, entries in [-1, 1] — so no
+    single large-response experience dominates the CKA. Project default for
+    Π-guidance arms (plasticity.normalize_v); magnitude info lives in the
+    separate MagnitudeTerm, which reads the RAW V."""
     flat = v.flatten(1)
+    if normalize:
+        flat = flat / (flat.norm(dim=1, keepdim=True) + 1e-12)
     return flat @ flat.T
 
 
@@ -60,7 +69,7 @@ def representation_summary(
 
 def plasticity_summary(
     probed, params, rule, experiences, probe_x, buffers=None, kernel_fn=linear_gram,
-    use_checkpoint: bool = False,
+    use_checkpoint: bool = False, normalize_v: bool = False,
 ) -> dict[str, dict[str, torch.Tensor]]:
     """Everything the loss terms need at one network state, per probed layer:
 
@@ -75,6 +84,7 @@ def plasticity_summary(
     k0, v = response_batch(probed, params, rule, experiences, probe_x, buffers, kernel_fn,
                            use_checkpoint)
     return {
-        name: {"K": k0[name], "V": v[name], "Pi": plasticity_kernel(v[name])}
+        name: {"K": k0[name], "V": v[name],
+               "Pi": plasticity_kernel(v[name], normalize=normalize_v)}
         for name in k0
     }

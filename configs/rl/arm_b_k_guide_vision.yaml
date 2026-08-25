@@ -4,5 +4,5 @@ _base_: base.yaml
 guidance:
   loss:
     - {name: cka_k, weight: 1.0}
-wandb: {name: rl-armB-k-guide-vision}
-train: {outdir: runs/rl-armB-k-guide-vision}
+wandb: {name: rl-armB-k-guide-vision-v2}
+train: {outdir: runs/rl-armB-k-guide-vision-v2}

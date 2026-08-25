@@ -1,0 +1,9 @@
+# Arm C'' — Π-guidance, CENTERED kernel + MUTUAL direction: both models pull
+# toward each other's relational plasticity (probe-centered V, cosine Π).
+# The most conservative Π definition combined with bidirectional co-adaptation.
+_base_: arm_c_pi_only.yaml
+guidance:
+  guided: [audio, vision]
+plasticity: {kernel: centered}
+wandb: {name: av-armC-pi-centered-mutual-vnorm}
+train: {outdir: runs/av-armC-centered-mutual-vnorm}

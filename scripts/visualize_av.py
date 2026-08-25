@@ -104,8 +104,10 @@ def plot_layer_matrix(run_dir: Path, checkpoint: str, out_path: Path):
     from src.training.rebuild import load_run
 
     cfg, sides, bank, kernel_fn = load_run(run_dir, checkpoint)
+    nv = bool(cfg["plasticity"].get("normalize_v", False))
     sums = {
-        name: eval_summaries(side, bank["eval_experiences"][name], bank["probes"][name], kernel_fn)
+        name: eval_summaries(side, bank["eval_experiences"][name], bank["probes"][name],
+                             kernel_fn, nv)
         for name, side in sides.items()
     }
     k_mat, pi_mat, g_names, t_names = cross_model_cka_matrices(sums["vision"], sums["audio"])

@@ -5,5 +5,5 @@ guidance:
   guided: [audio, vision]
   loss:
     - {name: cka_pi, weight: 1.0}
-wandb: {name: rl-armC-pi-mutual}
-train: {outdir: runs/rl-armC-pi-mutual}
+wandb: {name: rl-armC-pi-mutual-v2}
+train: {outdir: runs/rl-armC-pi-mutual-v2}

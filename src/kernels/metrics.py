@@ -13,7 +13,14 @@ EPS = 1e-12
 
 
 def cka(k1: torch.Tensor, k2: torch.Tensor) -> torch.Tensor:
-    """Linear CKA between two square kernels of the same size. Scale-invariant."""
+    """Linear CKA between two square kernels of the same size. Scale-invariant.
+
+    Inputs are pre-scaled to unit Frobenius norm before centering: the CKA
+    value is mathematically unchanged (scale invariance), but intermediate
+    sums stay O(1) instead of e.g. 1e24 for raw plasticity kernels — a
+    float32 precision guard, not a modeling choice."""
+    k1 = k1 / (k1.norm() + EPS)
+    k2 = k2 / (k2.norm() + EPS)
     k1c, k2c = center_gram(k1), center_gram(k2)
     hsic = (k1c * k2c).sum()
     return hsic / (k1c.norm() * k2c.norm() + EPS)

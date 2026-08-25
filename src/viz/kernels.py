@@ -104,6 +104,7 @@ class RunView:
             sums = plasticity_summary(
                 side.probed, side.detached_params(), side.rule,
                 exps, probe_x, side.buffers, self.kernel_fn,
+                normalize_v=bool(self.cfg["plasticity"].get("normalize_v", False)),
             )
             self._summary_cache[key] = (sums, exp_labels.cpu(), probe_labels.cpu())
         return self._summary_cache[key]

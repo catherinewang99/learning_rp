@@ -243,3 +243,36 @@ def test_mutual_pi_guidance_av():
         moved = any(not torch.equal(before[name][k], trainer.sides[name].params[k].detach())
                     for k in before[name])
         assert moved
+
+
+def test_normalize_v_cosine_pi():
+    """normalize_v: Π has unit diagonal (cosine kernel), stored V stays raw,
+    and the trainer threads the knob into the loss path."""
+    from src.kernels.plasticity import plasticity_kernel
+
+    trainer, bank, batches = make_trainer(["audio"], [{"name": "cka_pi", "weight": 1.0}])
+    trainer.normalize_v = True
+    side = trainer.sides["audio"]
+    own = trainer.summary(side, side.detached_params(),
+                          batch_to_exps(batches[-1], side), "audio")
+    for layer in own.values():
+        assert torch.allclose(layer["Pi"].diag(), torch.ones(len(layer["Pi"])), atol=1e-4)
+        assert layer["Pi"].abs().max() <= 1.0 + 1e-4
+        # stored V stays RAW: normalized Pi differs from raw-V Pi, and
+        # rebuilding Pi from the stored V with normalize=True reproduces it
+        raw_pi = plasticity_kernel(layer["V"], normalize=False)
+        assert not torch.allclose(raw_pi.diag(), torch.ones(len(raw_pi)), atol=1e-2)
+        assert torch.allclose(layer["Pi"], plasticity_kernel(layer["V"], normalize=True), atol=1e-5)
+    metrics = trainer.step(batches[-1])
+    assert torch.isfinite(torch.tensor(metrics["audio/align_loss"]))
+
+
+def test_cka_prescale_is_value_identical():
+    from src.kernels.metrics import cka
+
+    g = torch.Generator().manual_seed(3)
+    a = torch.randn(12, 5, generator=g); b = torch.randn(12, 5, generator=g)
+    k1, k2 = a @ a.T, b @ b.T
+    base = cka(k1, k2)
+    assert torch.allclose(cka(k1 * 1e6, k2 * 1e-3), base, atol=1e-5)  # scale-invariant
+    assert 0.0 < float(base) < 1.0

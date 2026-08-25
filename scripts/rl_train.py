@@ -37,13 +37,16 @@ def build_sides(cfg: dict, device: str) -> dict[str, RLSide]:
     sensor = AudioSensor(audio_cfg, seed=cfg["seed"] + 5)
     widths = tuple(cfg["model"]["widths"])
 
+    hw = cfg["arena"]["camera_hw"]
     sides = {}
-    for name, in_ch, arena_cfg, sens in (
-        ("vision", 3, arena_cfg_v, None),
-        ("audio", sensor.channels, arena_cfg_a, sensor),   # 2 if binaural
+    for name, in_ch, input_hw, arena_cfg, sens in (
+        ("vision", 3, (hw, hw), arena_cfg_v, None),
+        ("audio", sensor.channels, (audio_cfg.n_mels, sensor.frames),
+         arena_cfg_a, sensor),   # 2 channels if binaural
     ):
-        net = ActorCritic(in_channels=in_ch, widths=widths,
-                          trunk_dim=cfg["model"]["trunk_dim"])
+        net = ActorCritic(in_channels=in_ch, input_hw=input_hw, widths=widths,
+                          trunk_dim=cfg["model"]["trunk_dim"],
+                          stats_bypass=cfg["model"].get("stats_bypass", True))
         probed = ProbedModel(net, layer_types=[nn.Conv2d], drop_last=False)
         sides[name] = RLSide(name, name, VecArena(arena_cfg), probed,
                              optimizer_cfg=cfg["optimizer"], ppo_cfg=cfg["ppo"],
@@ -92,6 +95,8 @@ def main():
         kernel_fn=KERNEL_REGISTRY[plast.get("kernel", "linear")],
         use_checkpoint=plast.get("checkpoint", True),
         device=device, seed=cfg["seed"], log_fn=log,
+        stats_horizon=train_cfg.get("stats_horizon", 2000),
+        n_matched_layouts=train_cfg.get("path_layouts", 8),
     )
 
     order_note = "probe rows sorted by distance-to-goal (near -> far)"

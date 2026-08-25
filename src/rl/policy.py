@@ -1,10 +1,29 @@
 """ActorCritic: twin-friendly conv encoder + Gaussian policy + value head.
 
 The conv stack mirrors the vgg family used in the AV track (3x3 convs,
-GroupNorm, canonical pool spacing, GAP) with layer names conv1..convN so
+GroupNorm, canonical pool spacing) with layer names conv1..convN so
 ProbedModel's Conv2d probing and the 1:1 layer mapping work unchanged. The
 value head shares the encoder (project decision): the encoder's update — and
 therefore V(X|e) — includes both the policy and value gradients.
+
+The final spatial map is FLATTENED, not global-average-pooled: a policy must
+know WHERE the goal-feature fired ("goal left -> turn left"), and GAP averages
+that away (classification idiom, wrong for control; NatureCNN and the
+sensory-hierarchy repo both flatten for the same reason). The trunk input dim
+is computed from ``input_hw`` by a dry forward, so vision (64x64) and audio
+(n_mels x frames) each get correctly sized trunks; only the conv layers are
+aligned across modalities, so this asymmetry costs nothing.
+
+STATS BYPASS (stats_bypass=True): GroupNorm's per-sample mean removal makes
+the conv features nearly invariant to a common amplitude offset — and in
+log-mel space, loudness IS a common additive offset, i.e. the audio agent's
+absolute-distance cue (what the value head needs most). Contrasts survive GN
+(ILD, the time-axis trend, SNR texture); absolute level does not. So raw-input
+summary statistics — per-channel mean (level), per-channel std (texture), and
+the per-channel time-column profile (trend; for vision: the horizontal
+brightness profile = goal azimuth) — are concatenated to the flattened conv
+features ahead of the trunk, bypassing normalization entirely. The aligned
+conv stack is untouched.
 
 Action distribution: TANH-SQUASHED diagonal Gaussian over [forward, turn]
 (SquashedNormal, as in the sensory-hierarchy repo). The squash is load-bearing,
@@ -29,11 +48,13 @@ class ActorCritic(nn.Module):
     def __init__(
         self,
         in_channels: int,
+        input_hw: tuple[int, int] = (64, 64),   # (H, W) of this modality's obs
         widths: tuple[int, ...] = VGG6_WIDTHS,
         pool_after: tuple[int, ...] = (1, 2, 4, 6),
         trunk_dim: int = 256,
         action_dim: int = 2,
         groups: int = 8,
+        stats_bypass: bool = True,
     ):
         super().__init__()
         layers: OrderedDict[str, nn.Module] = OrderedDict()
@@ -45,18 +66,34 @@ class ActorCritic(nn.Module):
             if i in pool_after:
                 layers[f"pool{i}"] = nn.MaxPool2d(2)
             c = w
-        layers["gap"] = nn.AdaptiveAvgPool2d(1)
-        layers["flatten"] = nn.Flatten()
+        layers["flatten"] = nn.Flatten()   # keep spatial layout (no GAP)
         self.encoder = nn.Sequential(layers)
-        self.trunk = nn.Sequential(nn.Linear(c, trunk_dim), nn.Tanh())
+        self.stats_bypass = stats_bypass
+        with torch.no_grad():
+            probe_in = torch.zeros(1, in_channels, *input_hw)
+            flat_dim = self.encoder(probe_in).shape[1]
+            if stats_bypass:
+                flat_dim += self._input_stats(probe_in).shape[1]
+        self.trunk = nn.Sequential(nn.Linear(flat_dim, trunk_dim), nn.Tanh())
         self.actor_mean = nn.Linear(trunk_dim, action_dim)
         self.value_head = nn.Linear(trunk_dim, 1)
         self.log_std = nn.Parameter(torch.full((action_dim,), -0.5))
         nn.init.orthogonal_(self.actor_mean.weight, gain=0.01)
         nn.init.zeros_(self.actor_mean.bias)
 
+    @staticmethod
+    def _input_stats(x: torch.Tensor) -> torch.Tensor:
+        """(B, C*(2+W)) raw-input statistics: per-channel mean + std + the
+        per-channel time-column (width-axis) profile. Deterministic, no
+        parameters, no normalization anywhere on this path."""
+        return torch.cat([x.mean(dim=(2, 3)), x.std(dim=(2, 3)),
+                          x.mean(dim=2).flatten(1)], dim=1)
+
     def forward(self, x: torch.Tensor):
-        z = self.trunk(self.encoder(x))
+        features = self.encoder(x)
+        if self.stats_bypass:
+            features = torch.cat([features, self._input_stats(x)], dim=1)
+        z = self.trunk(features)
         mean = self.actor_mean(z)          # PRE-tanh mean; executed = tanh(sample)
         value = self.value_head(z).squeeze(-1)
         return mean, self.log_std.expand_as(mean), value

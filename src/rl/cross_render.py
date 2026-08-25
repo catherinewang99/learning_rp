@@ -107,10 +107,11 @@ def build_probe_bank(sides: dict, n: int, seed: int) -> dict:
 
     probes = {}
     for name, side in sides.items():
+        w = getattr(side, "window_steps", 1)
         obs = []
-        for (pose, goal), d in zip(layouts, dists):
-            cues = np.tile([d, bearing(pose, goal)],
-                           (getattr(side, "window_steps", 1), 1))
+        for idx, ((pose, goal), d) in enumerate(zip(layouts, dists)):
+            cues = np.column_stack([np.full(w, d), np.full(w, bearing(pose, goal)),
+                                    10_000 + idx * w + np.arange(w, dtype=np.float64)])
             obs.append(render_state(side.modality, side, pose, goal, cues, 0))
         probes[name] = torch.stack(obs)
     return {"probes": probes, "dist": torch.from_numpy(dists), "layouts": layouts}
@@ -136,10 +137,13 @@ def build_eval_transitions(sides: dict, cfg, n: int, seed: int, gamma_unused=Non
     for name, side in sides.items():
         w = getattr(side, "window_steps", 1)
         obs, obs_next = [], []
-        for pose, pose_next, goal, _, _, d0, d1 in rows:
-            hist = np.tile([d0, bearing(pose, goal)], (w, 1))
-            hist_next = np.concatenate(
-                [hist[1:], [[d1, bearing(pose_next, goal)]]]) if w > 1 else                 np.array([[d1, bearing(pose_next, goal)]])
+        for idx, (pose, pose_next, goal, _, _, d0, d1) in enumerate(rows):
+            ids = 100_000 + idx * (w + 1) + np.arange(w + 1, dtype=np.float64)
+            hist = np.column_stack([np.full(w, d0), np.full(w, bearing(pose, goal)),
+                                    ids[:w]])
+            next_row = [[d1, bearing(pose_next, goal), ids[w]]]
+            # x_next shares the overlap ids with x -> consistent shared past
+            hist_next = np.concatenate([hist[1:], next_row]) if w > 1 else                 np.array(next_row)
             obs.append(render_state(side.modality, side, pose, goal, hist, 0))
             obs_next.append(render_state(side.modality, side, pose_next, goal,
                                          hist_next, 0))

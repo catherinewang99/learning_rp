@@ -2,5 +2,5 @@
 # for the behavioral-alignment metrics.
 _base_: base.yaml
 guidance: {guided: [], loss: []}
-wandb: {name: rl-armA-independent}
-train: {outdir: runs/rl-armA-independent}
+wandb: {name: rl-armA-independent-v2}
+train: {outdir: runs/rl-armA-independent-v2}

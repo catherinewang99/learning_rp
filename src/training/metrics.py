@@ -64,12 +64,14 @@ def cross_model_k_cka(
     return out
 
 
-def eval_summaries(side, eval_experiences, probe_x, kernel_fn=linear_gram) -> dict:
+def eval_summaries(side, eval_experiences, probe_x, kernel_fn=linear_gram,
+                   normalize_v: bool = False) -> dict:
     """Plasticity summary at the side's current (detached) params on the fixed
     eval bank. Detached params -> no outer graph retained."""
     return plasticity_summary(
         side.probed, side.detached_params(), side.rule,
         eval_experiences, probe_x, side.buffers, kernel_fn,
+        normalize_v=normalize_v,
     )
 
 
@@ -139,7 +141,8 @@ def tracked_eval(
     for name, side in trainer.sides.items():
         experiences = [e.to(device) for e in bank["eval_experiences"][name]]
         sums[name] = eval_summaries(side, experiences, trainer.probes[name],
-                                    getattr(trainer, "kernel_fn", linear_gram))
+                                    getattr(trainer, "kernel_fn", linear_gram),
+                                    getattr(trainer, "normalize_v", False))
 
     if guide_name is None:
         guide_name = (

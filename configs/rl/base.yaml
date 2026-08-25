@@ -28,6 +28,9 @@ audio:
 model:
   widths: [32, 64, 128, 128, 256, 256]   # vgg-6 twins (GroupNorm, 1:1 conv alignment)
   trunk_dim: 256
+  stats_bypass: true          # raw-input mean/std/time-profile fed to the trunk
+                              #   around GroupNorm (GN removes common-mode level
+                              #   = the log-domain loudness/distance cue)
 
 optimizer: {name: adamw, lr: 0.0003, weight_decay: 0.01, betas: [0.9, 0.999],
             eps: 1.0e-8, clip_grad_norm: 0.5}
@@ -35,7 +38,10 @@ optimizer: {name: adamw, lr: 0.0003, weight_decay: 0.01, betas: [0.9, 0.999],
 ppo:
   clip_coef: 0.2
   value_coef: 0.5
-  entropy_coef: 0.01
+  entropy_coef: 0.01          # base-Gaussian entropy: governs log_std ONLY
+  mean_reg: 0.001             # pre-tanh mean L2: the anti-saturation term (the
+                              #   entropy bonus is blind to executed-action
+                              #   collapse via the mean — see rl/tasks.py)
   gamma: 0.99
   gae_lambda: 0.95
 
@@ -54,6 +60,10 @@ plasticity:
 
 train:
   windows: 50000              # x window_len = 500k env steps per agent
+  stats_horizon: 2000         # env steps: episode stats window (time-based, not
+                              #   last-N-episodes — avoids fast-success crowding;
+                              #   the unbiased measure is *_matched_success)
+  path_layouts: 8             # fixed matched layouts for path eval + boards
   eval_every: 100             # windows: tracked CKA + behavioral eval
   kernel_viz_every: 500       # windows: K / Π / V montage PNGs + wandb images
   kernel_viz_layers: [conv1, conv4, conv6]

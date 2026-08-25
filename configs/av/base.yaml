@@ -49,6 +49,9 @@ plasticity:
   m_eval: 32                  # fixed eval-bank experiences for tracked Π-CKA
   cka_every: 20               # log actual cross-model K-CKA (similarity) every k
                               #   steps, all arms: cka/probe/* and cka/batch/*
+  normalize_v: true           # Π from unit-norm V̂ (cosine Π): TTU-style
+                              #   per-experience normalization; DEFAULT for all
+                              #   Π arms. Magnitude term still sees raw V.
   kernel: linear              # linear | centered | row_normalized (kernels/gram.py)
                               #   linear   = PDF's K = HHᵀ; V includes mean/offset shifts
                               #   centered = probe-centered V; Π = relational plasticity only

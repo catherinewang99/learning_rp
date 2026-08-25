@@ -33,6 +33,9 @@ def main():
     p.add_argument("--run-dir", required=True)
     p.add_argument("--device", default="cpu")
     p.add_argument("--skip-pi", action="store_true", help="K-CKA only (faster)")
+    p.add_argument("--normalize-v", choices=["auto", "on", "off"], default="auto",
+                   help="Π from unit-norm V̂; 'auto' follows the run's config. Use "
+                        "'on' to re-measure old raw-Π runs on the new convention.")
     p.add_argument("--wandb-project", default=None)
     p.add_argument("--wandb-entity", default="cwang99-duke-university")
     args = p.parse_args()
@@ -55,12 +58,14 @@ def main():
     print(f"{'step':>7}  {'K-CKA mean':>10}  {'Π-CKA mean':>10}  per-layer K-CKA")
     for step, ckpt in ckpts:
         cfg, sides, bank, kernel_fn = load_run(run_dir, ckpt.name, args.device)
+        nv = {"auto": bool(cfg["plasticity"].get("normalize_v", False)),
+              "on": True, "off": False}[args.normalize_v]
         guide, target = "vision", "audio"
         sums = {}
         for name, side in sides.items():
             exps = [e.to(args.device) for e in bank["eval_experiences"][name]]
             probe = bank["probes"][name].to(args.device)
-            sums[name] = eval_summaries(side, exps, probe, kernel_fn)
+            sums[name] = eval_summaries(side, exps, probe, kernel_fn, nv)
         sims = cross_model_alignment(sums[guide], sums[target])
         k_mat, _, g_names, t_names = cross_model_cka_matrices(sums[guide], sums[target])
         row = {"step": step, "checkpoint": ckpt.name,

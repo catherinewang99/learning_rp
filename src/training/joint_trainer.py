@@ -107,6 +107,9 @@ class JointTrainer:
         #   class structure is consistent step to step. None = uniform subsample.
         use_checkpoint: bool = False,       # recompute stepped probe forwards in
         #   backward instead of storing them (kernels/response.stepped_grams)
+        normalize_v: bool = False,          # build Π from unit-norm V̂ (cosine Π):
+        #   no single large-response experience dominates CKA. Default ON via
+        #   configs for all Π arms; magnitude term still sees raw V.
         cka_every: int = 0,                 # if > 0: every k steps log the actual
         #   cross-model K-CKA SIMILARITY per layer (all arms, incl. control), on
         #   the fixed probes ("cka/probe/...") and the current minibatch
@@ -122,6 +125,7 @@ class JointTrainer:
         self.kernel_fn = kernel_fn
         self.stratify_by = stratify_by
         self.use_checkpoint = use_checkpoint
+        self.normalize_v = normalize_v
         self.cka_every = cka_every
         # What the loss actually reads. {"K"} alone => no hypothetical steps at
         # all (K-CKA control arm runs at ~control-arm cost).
@@ -145,6 +149,7 @@ class JointTrainer:
         return plasticity_summary(
             side.probed, params, side.rule, experiences, self.probes[name],
             side.buffers, self.kernel_fn, use_checkpoint=self.use_checkpoint,
+            normalize_v=self.normalize_v,
         )
 
     def measure_k_cka(self, batch: dict | None = None) -> dict[str, float]:

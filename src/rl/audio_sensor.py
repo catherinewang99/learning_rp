@@ -12,9 +12,13 @@ left/right level difference an INSTANTANEOUS direction cue (ITD is omitted —
 phase does not survive log-mel). Mono ablation (C=1): the loudness trend
 across the window is the only directional signal.
 
-Rendering is a pure function of ((distance, bearing) history, clip phase,
-noise seed), so cross-rendering the teacher's trajectory and building
-deterministic probe banks need only pose histories — no simulator state.
+Rendering is a pure function of ((distance, bearing, noise_id) history and
+clip phase). Each physical step carries a NOISE ID; that chunk's sensor noise
+is derived deterministically from (sensor seed, noise_id), so the same step
+re-renders with the identical waveform every time — overlapping observation
+windows share their past exactly (a real microphone's memory does not get
+re-recorded with fresh static at every glance), and cross-rendering
+reproduces precisely what would have been heard.
 """
 
 from __future__ import annotations
@@ -60,6 +64,7 @@ class AudioSensor:
         None loads cfg.clip_path or the default torchaudio speech asset."""
         self.cfg = cfg
         self.step_samples = int(cfg.sample_rate * cfg.step_seconds)
+        self.noise_seed = seed          # base of per-step id-seeded noise
         self.rng = np.random.default_rng(seed)
         self.clip = (clip / (np.abs(clip).max() + 1e-8)) if clip is not None else self._load_clip()
         self._mel = None  # lazy torchaudio transform
@@ -100,20 +105,28 @@ class AudioSensor:
 
     # -- waveform & spectrogram ------------------------------------------------
 
+    def _chunk_noise(self, noise_id: int, sigma: float) -> np.ndarray:
+        """(C, step_samples) noise for ONE physical step — a pure function of
+        (sensor seed, noise_id), identical on every re-render of that step."""
+        rng = np.random.default_rng([self.noise_seed, int(noise_id)])
+        return rng.normal(0.0, sigma, (self.channels, self.step_samples))
+
     def received_window(self, cues: np.ndarray, phase: int,
                         rng: np.random.Generator | None = None) -> np.ndarray:
-        """(C, W*step_samples) waveform for the last W steps. cues (W, 2) =
-        [distance, bearing] at each step (oldest first; bearing was measured
+        """(C, W*step_samples) waveform for the last W steps. cues (W, 3) =
+        [distance, bearing, noise_id] rows (oldest first; bearing measured
         with that step's heading); phase = clip sample index at the window
-        START. Deterministic given (cues, phase, rng)."""
-        rng = self.rng if rng is None else rng
+        START. Fully deterministic — ``rng`` is accepted for API stability
+        but noise comes from the per-step ids."""
         s, clip = self.step_samples, self.clip
         chans = [[] for _ in range(self.channels)]
-        for j, (d, beta) in enumerate(np.atleast_2d(cues)):
+        for j, row in enumerate(np.atleast_2d(cues)):
+            d, beta, nid = float(row[0]), float(row[1]), int(row[2])
             start = (phase + j * s) % len(clip)
             seg = np.take(clip, np.arange(start, start + s), mode="wrap")
-            for c, g in enumerate(self.ear_gains(float(d), float(beta))):
-                chans[c].append(seg * g + rng.normal(0.0, self.noise_sigma(d), s))
+            noise = self._chunk_noise(nid, float(self.noise_sigma(d)))
+            for c, g in enumerate(self.ear_gains(d, beta)):
+                chans[c].append(seg * g + noise[c])
         return np.stack([np.concatenate(ch) for ch in chans])
 
     def spectrogram(self, waveform: np.ndarray) -> torch.Tensor:
@@ -132,10 +145,14 @@ class AudioSensor:
 
     @staticmethod
     def _as_cues(history: np.ndarray) -> np.ndarray:
-        """Accept (W,) distances (bearing 0) or (W, 2) [d, beta] rows."""
+        """Normalize to (W, 3) [d, beta, noise_id] rows. Accepts (W,)
+        distances (bearing 0) or (W, 2); missing ids default to the row index
+        (deterministic, shared — fine for tests, give real ids in pipelines)."""
         h = np.asarray(history, dtype=np.float64)
         if h.ndim == 1:
             h = np.stack([h, np.zeros_like(h)], axis=1)
+        if h.shape[1] == 2:
+            h = np.column_stack([h, np.arange(len(h), dtype=np.float64)])
         return h
 
     def observe_traj(self, cue_history: np.ndarray, end_phase: int,
@@ -152,11 +169,14 @@ class AudioSensor:
         return self.spectrogram(self.received_window(cues, start_phase, rng))
 
     def observe_stationary(self, dist: float, bearing: float = 0.0, phase: int = 0,
-                           rng: np.random.Generator | None = None) -> torch.Tensor:
+                           rng: np.random.Generator | None = None,
+                           noise_offset: int = 0) -> torch.Tensor:
         """Probe-bank rendering: as if the agent sat at this (distance,
         bearing) for the whole window (documented statistics mismatch vs.
-        moving rollouts)."""
-        cues = np.tile([dist, bearing], (self.cfg.window_steps, 1))
+        moving rollouts). ``noise_offset`` gives each probe its own ids."""
+        w = self.cfg.window_steps
+        cues = np.column_stack([np.full(w, dist), np.full(w, bearing),
+                                noise_offset + np.arange(w, dtype=np.float64)])
         return self.observe_traj(cues, phase, rng)
 
     @property

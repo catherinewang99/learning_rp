@@ -24,12 +24,14 @@ from .cross_render import render_state
 
 
 def run_matched_episode(side, pose: np.ndarray, goal: np.ndarray,
-                        max_steps: int = 200) -> dict:
+                        max_steps: int = 200, noise_offset: int = 500_000) -> dict:
     """Deterministic episode from a fixed layout; returns the 2D path."""
     cfg: ArenaConfig = side.arena.cfg
     pose = np.array(pose, dtype=np.float64)
     goal = np.array(goal, dtype=np.float64)
-    cue_hist = [[float(np.linalg.norm(pose[:2] - goal)), bearing(pose, goal)]]
+    step_id = 0
+    cue_hist = [[float(np.linalg.norm(pose[:2] - goal)), bearing(pose, goal),
+                 float(noise_offset)]]
     phase = 0
     path = [pose[:2].copy()]
     reached = False
@@ -41,7 +43,8 @@ def run_matched_episode(side, pose: np.ndarray, goal: np.ndarray,
             action = torch.tanh(mean[0]).cpu().numpy()
             pose = kinematic_step(pose, action, cfg)
             d = float(np.linalg.norm(pose[:2] - goal))
-            cue_hist.append([d, bearing(pose, goal)])
+            step_id += 1
+            cue_hist.append([d, bearing(pose, goal), float(noise_offset + step_id)])
             cue_hist = cue_hist[-(side.window_steps + 1):]
             phase += side.sensor.step_samples if side.sensor else 1
             path.append(pose[:2].copy())
@@ -67,8 +70,10 @@ def matched_layout_eval(sides: dict, layouts: list, max_steps: int = 200) -> tup
     records = []
     for pose, goal in layouts:
         rec = {"pose": pose, "goal": goal, "episodes": {}}
-        for name, side in sides.items():
-            rec["episodes"][name] = run_matched_episode(side, pose, goal, max_steps)
+        for layout_idx, (name, side) in enumerate(sides.items()):
+            rec["episodes"][name] = run_matched_episode(
+                side, pose, goal, max_steps,
+                noise_offset=500_000 + len(records) * 1000)
         records.append(rec)
 
     names = list(sides)
