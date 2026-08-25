@@ -122,7 +122,7 @@ def make_trainer(guided, loss_terms):
     eval_bank = build_eval_transitions(sides, CFG, n=5, seed=4)
     return RLTrainer(sides, guided=guided,
                      align_loss=LayerwiseAlignmentLoss(build_loss(loss_terms)),
-                     window_len=5, m_per_window=4,
+                     window_len=5, m_per_window=4, align_every=1,
                      probe_bank=probe_bank, eval_bank=eval_bank, seed=0)
 
 
@@ -514,3 +514,28 @@ def test_cross_render_uses_full_teacher_history():
         stationary = render_state("audio", audio, window["pose"][t, b],
                                   window["goal"][t, b], frozen, window["phase"][t, b])
         assert not torch.equal(obs, stationary)          # ...is not stationary
+
+
+def test_align_every_cadence_and_history_pooling():
+    """PPO-only updates between alignment windows; alignment rides the k-th
+    update, drawing teacher experiences pooled over the stored history."""
+    trainer = make_trainer(["audio"], [{"name": "cka_pi", "weight": 1.0}])
+    trainer.align_every = 3
+    from collections import deque
+
+    trainer.history = {n: deque(maxlen=3) for n in trainer.sides}
+    for w in range(1, 7):
+        metrics = trainer.window()
+        if w % 3 == 0:
+            assert "audio/align_loss" in metrics, w      # alignment window
+            assert np.isfinite(metrics["audio/align_loss"])
+        else:
+            assert "audio/align_loss" not in metrics, w  # pure PPO window
+    # history holds the last 3 windows for both sides
+    assert all(len(h) == 3 for h in trainer.history.values())
+    # multi-window picks span the pool
+    from src.rl.cross_render import pick_transitions_multi
+
+    picks = pick_transitions_multi(list(trainer.history["vision"]), 8,
+                                   np.random.default_rng(0))
+    assert len({w for w, _, _ in picks}) >= 2            # crosses windows

@@ -56,6 +56,9 @@ guidance:
 
 plasticity:
   window_len: 10              # env steps per window; update (PPO [+align]) at boundary
+  align_every: 10             # alignment on every 10th window update (the 9 in
+                              #   between are pure PPO); teacher experiences are
+                              #   pooled over its last 10 windows (~100 env steps)
   m_per_window: 12            # teacher transitions cross-rendered per alignment
   probe_size: 64              # fixed paired probe states (rows sorted by dist-to-goal)
   eval_transitions: 24        # fixed paired transition bank for tracked Π-CKA

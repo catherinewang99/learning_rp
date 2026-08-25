@@ -103,6 +103,7 @@ def main():
         align_loss=LayerwiseAlignmentLoss(build_loss(guidance["loss"]),
                                           upper_half=guidance["upper_half"]),
         window_len=plast["window_len"], m_per_window=plast["m_per_window"],
+        align_every=plast.get("align_every", 10),
         gamma=cfg["ppo"]["gamma"], gae_lambda=cfg["ppo"]["gae_lambda"],
         probe_bank=probe_bank, eval_bank=eval_bank,
         kernel_fn=KERNEL_REGISTRY[plast.get("kernel", "linear")],

@@ -4,9 +4,13 @@ Every window (default 10 env steps x B envs) per side:
   1. collect the window with the current (detached) policy in the side's OWN
      envs — trajectories are fully independent across sides;
   2. GAE with a bootstrap at the window boundary;
-  3. one AdamW update on the window's PPO loss [+ for guided sides, the
-     layerwise alignment loss between the student's plasticity summary on the
-     TEACHER's cross-rendered transitions and the teacher's own summary].
+  3. one AdamW update on the window's PPO loss.
+Every ``align_every``-th window (default 10 -> alignment every ~100 env
+steps), guided sides ADD the layerwise alignment loss to that same update:
+the teacher's plasticity summary is computed on experiences sampled from its
+LAST ``align_every`` WINDOWS (the whole inter-alignment period, kept in a
+rolling history), cross-rendered into the student's modality. Between
+alignment events, updates are pure PPO and no teacher machinery runs.
 The rule that defines V is the same AdamW + per-transition PPO loss the real
 update uses (honesty invariant, as in the other tracks).
 """
@@ -23,7 +27,8 @@ from ..training.metrics import cross_model_alignment
 from .arena import VecArena, bearing
 from .audio_sensor import AudioSensor
 from .cross_render import (cross_render_experiences, eval_experiences_for,
-                           pick_transitions, teacher_experiences)
+                           group_picks, pick_transitions_multi,
+                           teacher_experiences)
 from .tasks import make_ppo_task
 
 
@@ -224,6 +229,9 @@ class RLSide:
 class RLTrainer:
     def __init__(self, sides: dict[str, RLSide], guided: list[str], align_loss,
                  window_len: int = 10, m_per_window: int = 12,
+                 align_every: int = 10,     # alignment rides every k-th window
+                 #   update; the k-1 in between are pure PPO. Teacher
+                 #   experiences pool over its last k windows.
                  gamma: float = 0.99, gae_lambda: float = 0.95,
                  probe_bank: dict | None = None, eval_bank: dict | None = None,
                  kernel_fn=linear_gram, use_checkpoint: bool = True,
@@ -233,6 +241,13 @@ class RLTrainer:
         assert set(guided) <= set(sides)
         self.sides, self.guided, self.align_loss = sides, guided, align_loss
         self.window_len, self.m_per_window = window_len, m_per_window
+        self.align_every = max(1, align_every)
+        from collections import deque
+
+        # rolling per-side history of the last align_every windows (CPU
+        # tensors); the pool the alignment event samples from
+        self.history: dict[str, deque] = {
+            name: deque(maxlen=self.align_every) for name in sides}
         self.gamma, self.gae_lambda = gamma, gae_lambda
         self.probe_bank, self.eval_bank = probe_bank, eval_bank
         self.kernel_fn, self.use_checkpoint = kernel_fn, use_checkpoint
@@ -289,15 +304,24 @@ class RLTrainer:
             metrics[f"{name}/exec_entropy_est"] = float(-w["logp"].mean())
 
 
-        # teacher summaries (detached) from their OWN windows
+        for name in self.sides:
+            self.history[name].append(windows[name])
+
+        align_now = (self.window_count + 1) % self.align_every == 0
+        # teacher summaries (detached), pooled over the teacher's stored
+        # window history — only computed on alignment windows
         summaries_detached: dict[str, tuple] = {}
-        for name in {self._teacher_of(g) for g in self.guided}:
-            side = self.sides[name]
-            side.sync_rule_state()
-            picks = pick_transitions(windows[name], self.m_per_window, self.rng)
-            experiences = teacher_experiences(windows[name], picks, side.device)
-            summaries_detached[name] = (
-                self._summary(side, side.detached_params(), experiences), picks)
+        if align_now:
+            for name in {self._teacher_of(g) for g in self.guided}:
+                side = self.sides[name]
+                side.sync_rule_state()
+                hist = list(self.history[name])
+                picks = group_picks(pick_transitions_multi(hist, self.m_per_window, self.rng))
+                experiences = []
+                for w_idx, sub in picks.items():
+                    experiences.extend(teacher_experiences(hist[w_idx], sub, side.device))
+                summaries_detached[name] = (
+                    self._summary(side, side.detached_params(), experiences), picks)
 
         for name, side in self.sides.items():
             side.sync_rule_state()
@@ -306,11 +330,14 @@ class RLTrainer:
             metrics.update({f"{name}/{k}": v for k, v in parts.items()})
             total = task_loss
 
-            if name in self.guided:
+            if name in self.guided and align_now:
                 teacher_name = self._teacher_of(name)
                 teacher_sum, picks = summaries_detached[teacher_name]
-                student_exps = cross_render_experiences(
-                    side, windows[teacher_name], picks, self.gamma)
+                teacher_hist = list(self.history[teacher_name])
+                student_exps = []
+                for w_idx, sub in picks.items():   # same grouped order as the
+                    student_exps.extend(cross_render_experiences(   # teacher ->
+                        side, teacher_hist[w_idx], sub, self.gamma))  # rows pair
                 own = self._summary(side, side.params, student_exps)
                 align_total, parts = self.align_loss(own, teacher_sum)
                 metrics[f"{name}/align_loss"] = float(align_total)

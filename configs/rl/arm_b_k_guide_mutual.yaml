@@ -2,7 +2,8 @@
 # control, training-the-untrainable style).
 _base_: base.yaml
 guidance:
+  guided: [audio, vision]
   loss:
     - {name: cka_k, weight: 1.0}
-wandb: {name: rl-armB-k-guide-vision-ae10}
-train: {outdir: runs/rl-armB-k-guide-vision-ae10}
+wandb: {name: rl-armB-k-guide-mutual-ae10}
+train: {outdir: runs/rl-armB-k-guide-mutual-ae10}

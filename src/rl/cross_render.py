@@ -91,6 +91,37 @@ def pick_transitions(window, m: int, rng: np.random.Generator) -> list[tuple[int
     return [valid[i] for i in idx]
 
 
+def pick_transitions_multi(windows: list, m: int,
+                           rng: np.random.Generator) -> list[tuple[int, int, int]]:
+    """m random (window_idx, t, b) pooled UNIFORMLY over all valid transitions
+    of the stored window history — the alignment event samples the teacher's
+    whole inter-alignment period, not just the boundary window.
+
+    NOTE on staleness: older windows' logp/advantages were computed under the
+    teacher's then-current params; its V is evaluated at the boundary params,
+    so those experiences enter with PPO ratio != 1 (importance-weighted
+    exactly as the real PPO loss would weight them) and mildly stale advantage
+    estimates — the accepted semantics of "the update it would take NOW on a
+    remembered experience"."""
+    valid: list[tuple[int, int, int]] = []
+    for w_idx, window in enumerate(windows):
+        t_len, b_len = window["reward"].shape
+        valid.extend((w_idx, t, b) for t in range(t_len) for b in range(b_len)
+                     if not bool(window["reset"][t, b]))
+    idx = rng.choice(len(valid), size=min(m, len(valid)), replace=False)
+    return [valid[i] for i in idx]
+
+
+def group_picks(picks: list[tuple[int, int, int]]) -> dict[int, list[tuple[int, int]]]:
+    """(w_idx, t, b) picks -> {w_idx: [(t, b)...]} preserving order within
+    groups; iterate groups in sorted w_idx order on BOTH teacher and student
+    so Π rows stay paired."""
+    grouped: dict[int, list[tuple[int, int]]] = {}
+    for w_idx, t, b in picks:
+        grouped.setdefault(w_idx, []).append((t, b))
+    return dict(sorted(grouped.items()))
+
+
 # ---- fixed banks ------------------------------------------------------------
 
 
