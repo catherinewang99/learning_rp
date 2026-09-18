@@ -37,8 +37,6 @@ class RunLogger:
 
             run = wandb.init(
                 project=wandb_cfg["project"],
-                entity=wandb_cfg.get("entity"),   # None -> account default; set
-                #   explicitly (crossmodal convention) so runs land where you look
                 name=wandb_cfg.get("name"),
                 config=cfg,
             )
@@ -70,7 +68,6 @@ def maybe_wandb(cfg: dict):
         raise ValueError(_NO_PROJECT_MSG)
     import wandb
 
-    run = wandb.init(project=wandb_cfg["project"], entity=wandb_cfg.get("entity"),
-                     name=wandb_cfg.get("name"), config=cfg)
+    run = wandb.init(project=wandb_cfg["project"], name=wandb_cfg.get("name"), config=cfg)
     print(f"[lrp] wandb run: {run.url}", flush=True)
     return wandb.log
