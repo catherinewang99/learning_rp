@@ -30,6 +30,7 @@ from .cross_render import (cross_render_experiences, eval_experiences_for,
                            group_picks, pick_transitions_multi,
                            teacher_experiences)
 from .tasks import make_ppo_task
+from .checked_update import checked_step
 
 
 class RLSide:
@@ -323,33 +324,60 @@ class RLTrainer:
                 summaries_detached[name] = (
                     self._summary(side, side.detached_params(), experiences), picks)
 
+
         for name, side in self.sides.items():
             side.sync_rule_state()
-            task_loss, parts = side.window_ppo_loss(windows[name], side.params)
-            metrics[f"{name}/ppo_loss"] = float(task_loss)
-            metrics.update({f"{name}/{k}": v for k, v in parts.items()})
-            total = task_loss
+            task_loss, parts = side.window_ppo_loss(
+                windows[name], side.params)
 
-            if name in self.guided and align_now:
+            metrics[f"{name}/ppo_loss"] = task_loss.detach().item()
+            metrics.update({
+                f"{name}/{key}": value
+                for key, value in parts.items()
+            })
+            align_total = None
+
+            if (name in self.guided and align_now
+                    and self._teacher_of(name) in summaries_detached):
                 teacher_name = self._teacher_of(name)
                 teacher_sum, picks = summaries_detached[teacher_name]
                 teacher_hist = list(self.history[teacher_name])
+
                 student_exps = []
-                for w_idx, sub in picks.items():   # same grouped order as the
-                    student_exps.extend(cross_render_experiences(   # teacher ->
-                        side, teacher_hist[w_idx], sub, self.gamma))  # rows pair
-                own = self._summary(side, side.params, student_exps)
-                align_total, parts = self.align_loss(own, teacher_sum)
-                metrics[f"{name}/align_loss"] = float(align_total)
-                metrics.update({f"{name}/align/{k}": float(v) for k, v in parts.items()})
-                total = total + align_total
+                for w_idx, sub in picks.items():
+                    student_exps.extend(cross_render_experiences(
+                        side, teacher_hist[w_idx], sub, self.gamma))
+
+                own = self._summary(
+                    side, side.params, student_exps)
+                align_total, parts = self.align_loss(
+                    own, teacher_sum)
+
+                metrics[f"{name}/align_loss"] = (
+                    align_total.detach().item())
+                metrics.update({
+                    f"{name}/align/{key}": float(value)
+                    for key, value in parts.items()
+                })
+
+            update_metrics = checked_step(
+                side.params,
+                side.optimizer,
+                task_loss,
+                align_total,
+                max_align_ratio=0.1,
+                clip_norm=side.clip_grad_norm,
+            )
+            metrics.update({
+                f"{name}/{key}": value
+                for key, value in update_metrics.items()
+            })
+            total = total + align_total
 
             side.optimizer.zero_grad()
-            total.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 list(side.params.values()), side.clip_grad_norm or float("inf"))
             metrics[f"{name}/grad_norm"] = float(grad_norm)
-            side.optimizer.step()
             metrics[f"{name}/total_loss"] = float(total)
 
         self.window_count += 1
