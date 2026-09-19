@@ -218,7 +218,7 @@ def build_eval_transitions(sides: dict, cfg, n: int, seed: int, gamma_unused=Non
             hist_next = np.concatenate([hist[1:], next_row]) if w > 1 else                 np.array(next_row)
             obs.append(render_state(side.modality, side, pose, goal, hist, 0))
             obs_next.append(render_state(side.modality, side, pose_next, goal,
-                                         hist_next, 0))
+                                         hist_next, side.phase_step))
         per_side[name] = {"obs": torch.stack(obs), "obs_next": torch.stack(obs_next)}
     return {
         "sides": per_side,
