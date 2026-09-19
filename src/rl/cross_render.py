@@ -98,18 +98,28 @@ def cross_render_experiences(student, window,
     return experiences
 
 
-def teacher_experiences(window, picks: list[tuple[int, int]], device) -> list[Experience]:
-    """The teacher's own transitions with its rollout quantities (GAE
-    advantage, stored logp) — exactly what its real PPO update consumed."""
+def teacher_experiences(window,
+                        picks: list[tuple[int, int]],
+                        device) -> list[Experience]:
     out = []
+
     for t, b in picks:
+        y = {
+            "action": window["action"][t, b:b + 1].to(device),
+            "logp_old": window["logp"][t, b:b + 1].to(device),
+            "advantage": window["advantage"][t, b:b + 1].to(device),
+            "value_target": window["returns"][t, b:b + 1].to(device),
+        }
+
+        if "pre_tanh" in window:
+            y["pre_tanh"] = window["pre_tanh"][
+                t, b:b + 1].to(device)
+
         out.append(Experience(
-            x=window["obs"][t, b : b + 1].to(device),
-            y={"action": window["action"][t, b : b + 1].to(device),
-               "logp_old": window["logp"][t, b : b + 1].to(device),
-               "advantage": window["advantage"][t, b : b + 1].to(device),
-               "value_target": window["returns"][t, b : b + 1].to(device)},
+            x=window["obs"][t, b:b + 1].to(device),
+            y=y,
         ))
+
     return out
 
 
