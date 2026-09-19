@@ -126,7 +126,7 @@ class RLSide:
         cfg = self.arena.cfg
         b, w = cfg.num_envs, self.window_steps
         window = {k: [] for k in
-                  ("obs", "action", "logp", "value", "reward", "reset", "done",
+                  ("obs", "action", "pre_tanh", "logp", "value", "reward", "reset", "done",
                    "pmean", "pose", "goal", "cue_hist", "phase")}
         for _ in range(t_len):
             window["pose"].append(self.poses_padded())
