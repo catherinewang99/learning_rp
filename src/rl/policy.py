@@ -39,7 +39,10 @@ from __future__ import annotations
 from collections import OrderedDict
 
 import torch
+import math
 from torch import nn
+import torch.nn.functional as F
+from torch.distributions import Normal
 
 VGG6_WIDTHS = (32, 64, 128, 128, 256, 256)
 
@@ -102,20 +105,41 @@ class ActorCritic(nn.Module):
 _ATANH_EPS = 1e-6
 
 
-def squashed_logp_entropy(mean, log_std, action):
-    """log-prob of an EXECUTED action a = tanh(u) under the squashed Gaussian,
-    plus the base-Gaussian entropy proxy. One formula for collection and
-    replay (u recovered via atanh) so PPO ratios are exactly consistent."""
-    a = action.clamp(-1 + _ATANH_EPS, 1 - _ATANH_EPS)
-    u = torch.atanh(a)
-    dist = torch.distributions.Normal(mean, log_std.exp())
-    logp = dist.log_prob(u).sum(-1) - torch.log1p(-a.pow(2) + _ATANH_EPS).sum(-1)
-    return logp, dist.entropy().sum(-1)
+def squashed_logp_entropy(mean: torch.Tensor, log_std: torch.Tensor,
+                          action: torch.Tensor,
+                          pre_tanh: torch.Tensor | None = None): #Comment from Vighnesh --> I hate doing bullshit like this
+    u = (
+        torch.atanh(action.clamp(
+            -1 + _ATANH_EPS, 1 - _ATANH_EPS))
+        if pre_tanh is None else pre_tanh
+    )
+
+    normal_logp = (
+        -0.5 * ((u - mean) * torch.exp(-log_std)).square()
+        - log_std
+        - 0.5 * math.log(2 * math.pi)
+    )
+
+    log_jacobian = 2 * (
+        math.log(2.0) - u - F.softplus(-2 * u)
+    )
+
+    logp = (normal_logp - log_jacobian).sum(-1)
+    entropy = (
+        log_std + 0.5 * (1 + math.log(2 * math.pi))
+    ).sum(-1)
+    return logp, entropy
 
 
-def squashed_sample(mean, log_std):
-    """(action in (-1,1), logp) — sampling path for rollouts."""
-    dist = torch.distributions.Normal(mean, log_std.exp())
-    action = torch.tanh(dist.sample())
-    logp, _ = squashed_logp_entropy(mean, log_std, action)
+def squashed_sample(mean: torch.Tensor, log_std: torch.Tensor,
+                     return_pre_tanh: False):
+
+    dist = Normal(mean, log_std.exp())
+    pre_tanh = dist.sample()
+    action = torch.tanh(pre_tanh)
+    logp, _ = squashed_logp_entropy(
+        mean, log_std, action, pre_tanh=pre_tanh)
+
+    if return_pre_tanh:
+        return action, logp, pre_tanh
     return action, logp
