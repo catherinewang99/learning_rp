@@ -140,6 +140,7 @@ class RLSide:
                 from .policy import squashed_sample
 
                 action, logp = squashed_sample(mean, log_std)
+                action, logp, pre_tanh = squashed_sample(mean, log_std, return_pre_tanh = True)
             act_np = action.cpu().numpy()
             out = self.arena.step(act_np)
             self.episode_return += out["reward"]
@@ -159,6 +160,7 @@ class RLSide:
                     self.cue_hist[i] = self.cue_hist[i][-(w + 1):]
             window["obs"].append(obs.cpu())
             window["action"].append(action.cpu())
+            window['pre_tanh'].append(pre_tanh.cpu())
             window["pmean"].append(mean.cpu())
             window["logp"].append(logp.cpu())
             window["value"].append(value.cpu())
@@ -222,6 +224,8 @@ class RLSide:
              "logp_old": window["logp"].reshape(-1).to(self.device),
              "advantage": window["advantage"].reshape(-1).to(self.device),
              "value_target": window["returns"].reshape(-1).to(self.device)}
+        if 'pre_tanh' in window:
+            y["pre_tanh"] = window["pre_tanh"].reshape(t_len * b, -1).to(self.device)
         from ..data.experiences import Experience
 
         return self.task.components(self.probed, params, Experience(x=obs, y=y), self.buffers)
