@@ -20,6 +20,7 @@ import torch
 
 from ..data.experiences import Experience
 from .arena import bearing, kinematic_step, reward_fn
+from .policy import squashed_logp_entropy
 
 
 def render_state(modality: str, side, pose, goal, cue_hist, phase) -> torch.Tensor:
@@ -30,40 +31,70 @@ def render_state(modality: str, side, pose, goal, cue_hist, phase) -> torch.Tens
         return torch.from_numpy(side.arena.render_at(np.asarray(pose), np.asarray(goal)))
     return side.sensor.observe_traj(np.asarray(cue_hist), int(phase), side.render_rng)
 
-
-def cross_render_experiences(student, window, picks: list[tuple[int, int]],
+def cross_render_experiences(student, window,
+                             picks: list[tuple[int, int]],
                              gamma: float) -> list[Experience]:
-    """Teacher window transitions -> the student's modality, with the
-    student's OWN quantities in y (its logp of the teacher's action -> ratio 1,
-    its critic's 1-step TD advantage). picks = [(t, b)] with no reset at t."""
+
     experiences = []
     with torch.no_grad():
+        params = student.detached_params()
+
         for t, b in picks:
-            x = render_state(student.modality, student,
-                             window["pose"][t, b], window["goal"][t, b],
-                             window["cue_hist"][t, b], window["phase"][t, b]).unsqueeze(0)
-            x_next = render_state(student.modality, student,
-                                  window["pose"][t + 1, b], window["goal"][t, b],
-                                  window["cue_hist"][t + 1, b],
-                                  window["phase"][t + 1, b]).unsqueeze(0)
-            x, x_next = x.to(student.device), x_next.to(student.device)
-            action = window["action"][t, b : b + 1].to(student.device)
-            reward = float(window["reward"][t, b])
+            done = bool(window["done"][t, b])
+
+            if bool(window["reset"][t, b]) and not done:
+                raise ValueError(
+                    "Cannot bootstrap through an auto-reset time limit.")
+
+            x = render_state(
+                student.modality, student,
+                window["pose"][t, b],
+                window["goal"][t, b],
+                window["cue_hist"][t, b],
+                window["phase"][t, b],
+            ).unsqueeze(0).to(student.device)
+
+            action = window["action"][t, b:b + 1].to(
+                student.device)
+            pre_tanh = (
+                window["pre_tanh"][t, b:b + 1].to(student.device)
+                if "pre_tanh" in window else None
+            )
 
             mean, log_std, value = student.probed.forward_output(
-                student.detached_params(), x, student.buffers)
-            _, _, value_next = student.probed.forward_output(
-                student.detached_params(), x_next, student.buffers)
-            from .policy import squashed_logp_entropy
+                params, x, student.buffers)
+            reward = window["reward"][t, b:b + 1].to(
+                student.device)
 
-            logp, _ = squashed_logp_entropy(mean, log_std, action)
-            target = reward + gamma * value_next
-            experiences.append(Experience(
-                x=x,
-                y={"action": action, "logp_old": logp.detach(),
-                   "advantage": (target - value).detach(),
-                   "value_target": target.detach()},
-            ))
+            if done:
+                target = reward
+            else:
+                x_next = render_state(
+                    student.modality, student,
+                    window["pose"][t + 1, b],
+                    window["goal"][t, b],
+                    window["cue_hist"][t + 1, b],
+                    window["phase"][t + 1, b],
+                ).unsqueeze(0).to(student.device)
+
+                _, _, value_next = student.probed.forward_output(
+                    params, x_next, student.buffers)
+                target = reward + gamma * value_next
+
+            logp, _ = squashed_logp_entropy(
+                mean, log_std, action, pre_tanh=pre_tanh)
+
+            y = {
+                "action": action,
+                "logp_old": logp.detach(),
+                "advantage": (target - value).detach(),
+                "value_target": target.detach(),
+            }
+            if pre_tanh is not None:
+                y["pre_tanh"] = pre_tanh
+
+            experiences.append(Experience(x=x, y=y))
+
     return experiences
 
 
