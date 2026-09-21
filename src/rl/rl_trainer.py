@@ -376,11 +376,6 @@ class RLTrainer:
                 for key, value in update_metrics.items()
             })
 
-            side.optimizer.zero_grad()
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                list(side.params.values()), side.clip_grad_norm or float("inf"))
-            metrics[f"{name}/grad_norm"] = float(grad_norm)
-
         self.window_count += 1
         metrics["step"] = self.window_count * self.window_len
         if self.log_fn is not None:
