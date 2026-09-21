@@ -139,7 +139,6 @@ class RLSide:
                     self.detached_params(), obs, self.buffers)
                 from .policy import squashed_sample
 
-                action, logp = squashed_sample(mean, log_std)
                 action, logp, pre_tanh = squashed_sample(mean, log_std, return_pre_tanh = True)
             act_np = action.cpu().numpy()
             out = self.arena.step(act_np)
@@ -376,13 +375,11 @@ class RLTrainer:
                 f"{name}/{key}": value
                 for key, value in update_metrics.items()
             })
-            total = total + align_total
 
             side.optimizer.zero_grad()
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 list(side.params.values()), side.clip_grad_norm or float("inf"))
             metrics[f"{name}/grad_norm"] = float(grad_norm)
-            metrics[f"{name}/total_loss"] = float(total)
 
         self.window_count += 1
         metrics["step"] = self.window_count * self.window_len
