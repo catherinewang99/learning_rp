@@ -326,6 +326,15 @@ class RLTrainer:
                     experiences.extend(teacher_experiences(hist[w_idx], sub, side.device))
                 summaries_detached[name] = (
                     self._summary(side, side.detached_params(), experiences), picks)
+                if len(experiences) < 3:
+                    metrics[f"{name}/align_skipped_small_bank"] = 1.0
+                    continue
+
+                summaries_detached[name] = (
+                    self._summary(
+                        side, side.detached_params(), experiences),
+                    picks,
+                )
 
 
         for name, side in self.sides.items():
