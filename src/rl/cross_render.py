@@ -124,10 +124,9 @@ def teacher_experiences(window,
 
 
 def pick_transitions(window, m: int, rng: np.random.Generator) -> list[tuple[int, int]]:
-    """m random (t, b) with no reset at t (so t+1 is the true successor)."""
     t_len, b_len = window["reward"].shape
     valid = [(t, b) for t in range(t_len) for b in range(b_len)
-             if not (bool(window["reset"][t, b]) or bool(window["done"][t, b]))]
+             if (not bool(window["reset"][t, b]) or bool(window["done"][t, b]))]
     idx = rng.choice(len(valid), size=min(m, len(valid)), replace=False)
     return [valid[i] for i in idx]
 
@@ -148,7 +147,7 @@ def pick_transitions_multi(windows: list, m: int,
     for w_idx, window in enumerate(windows):
         t_len, b_len = window["reward"].shape
         valid.extend((w_idx, t, b) for t in range(t_len) for b in range(b_len)
-                     if not (bool(window["reset"][t, b]) or bool(window["done"][t, b])))
+                     if (not bool(window["reset"][t, b]) or bool(window["done"][t, b])))
     idx = rng.choice(len(valid), size=min(m, len(valid)), replace=False)
     return [valid[i] for i in idx]
 
