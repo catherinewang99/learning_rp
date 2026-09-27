@@ -132,7 +132,7 @@ def squashed_logp_entropy(mean: torch.Tensor, log_std: torch.Tensor,
 
 
 def squashed_sample(mean: torch.Tensor, log_std: torch.Tensor,
-                     return_pre_tanh: False):
+                     return_pre_tanh: bool = False):
 
     dist = Normal(mean, log_std.exp())
     pre_tanh = dist.sample()
