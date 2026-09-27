@@ -127,7 +127,7 @@ class RLSide:
         b, w = cfg.num_envs, self.window_steps
         window = {k: [] for k in
                   ("obs", "action", "pre_tanh", "logp", "value", "reward", "reset", "done",
-                   "pmean", "pose", "goal", "cue_hist", "phase")}
+                   "pmean", "pose", "goal", "cue_hist", "phase", "distance_progress")}
         for _ in range(t_len):
             window["pose"].append(self.poses_padded())
             window["goal"].append(self.arena.goals.copy())
@@ -164,6 +164,8 @@ class RLSide:
             window["logp"].append(logp.cpu())
             window["value"].append(value.cpu())
             window["reward"].append(torch.from_numpy(out["reward"]).float())
+            window["distance_progress"].append(torch.from_numpy(
+                out["dist_before"] - out["dist_after"]).float())
             window["reset"].append(torch.from_numpy(out["reset"]))
             window["done"].append(torch.from_numpy(out["done"]))
         # final state row (for next-obs cross-rendering and the bootstrap)
@@ -209,6 +211,8 @@ class RLSide:
             "episode_return": float(np.mean([f[2] for f in recent])),
             "episode_len": float(np.mean([f[3] for f in recent])),
             "episodes_recent": float(len(recent)),
+            "successes_recent": float(sum(bool(f[1]) for f in recent)),
+            "failures_recent": float(sum(not bool(f[1]) for f in recent)),
         }
 
     # -- the real update's loss (vectorized == mean per-transition task) ------
@@ -307,6 +311,18 @@ class RLTrainer:
             # actions). Plummeting while log_std holds = mean-driven collapse.
             metrics[f"{name}/exec_entropy_est"] = float(-w["logp"].mean())
 
+            metrics[f"{name}/distance_progress_mean"] = float(
+                w["distance_progress"].mean())
+            metrics[f"{name}/successes_this_window"] = float(w["done"].sum())
+            metrics[f"{name}/advantage_std_raw"] = float(adv.std())
+            for dim, action_name in enumerate(("forward", "turn")):
+                metrics[f"{name}/policy_mean_{action_name}"] = float(
+                    w["pmean"][..., dim].mean())
+                metrics[f"{name}/det_action_{action_name}"] = float(
+                    w["pmean"][..., dim].tanh().mean())
+                metrics[f"{name}/action_sat_frac_{action_name}"] = float(
+                    (w["action"][..., dim].abs() > 0.95).float().mean())
+
 
         for name in self.sides:
             self.history[name].append(windows[name])
@@ -324,17 +340,11 @@ class RLTrainer:
                 experiences = []
                 for w_idx, sub in picks.items():
                     experiences.extend(teacher_experiences(hist[w_idx], sub, side.device))
-                summaries_detached[name] = (
-                    self._summary(side, side.detached_params(), experiences), picks)
                 if len(experiences) < 3:
                     metrics[f"{name}/align_skipped_small_bank"] = 1.0
                     continue
-
                 summaries_detached[name] = (
-                    self._summary(
-                        side, side.detached_params(), experiences),
-                    picks,
-                )
+                    self._summary(side, side.detached_params(), experiences), picks)
 
 
         for name, side in self.sides.items():
@@ -372,6 +382,16 @@ class RLTrainer:
                     for key, value in parts.items()
                 })
 
+            watched = {
+                "actor_head": "actor_mean.weight",
+                "encoder_first": "encoder.conv1.weight",
+                "log_std": "log_std",
+            }
+            before = {}
+            if (self.window_count + 1) % 10 == 0:
+                before = {label: side.params[key].detach().clone()
+                          for label, key in watched.items() if key in side.params}
+
             update_metrics = checked_step(
                 side.params,
                 side.optimizer,
@@ -384,6 +404,10 @@ class RLTrainer:
                 f"{name}/{key}": value
                 for key, value in update_metrics.items()
             })
+
+            for label, old in before.items():
+                delta = side.params[watched[label]].detach() - old
+                metrics[f"{name}/{label}_update_norm"] = delta.norm().item()
 
         self.window_count += 1
         metrics["step"] = self.window_count * self.window_len
