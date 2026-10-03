@@ -124,6 +124,7 @@ def teacher_experiences(window,
 
 
 def pick_transitions(window, m: int, rng: np.random.Generator) -> list[tuple[int, int]]:
+    """Sample ongoing or true-terminal transitions; exclude time-limit resets."""
     t_len, b_len = window["reward"].shape
     valid = [(t, b) for t in range(t_len) for b in range(b_len)
              if (not bool(window["reset"][t, b]) or bool(window["done"][t, b]))]
@@ -165,12 +166,31 @@ def group_picks(picks: list[tuple[int, int, int]]) -> dict[int, list[tuple[int, 
 # ---- fixed banks ------------------------------------------------------------
 
 
+def sample_layouts(cfg, n: int, seed: int):
+    """Same spawn distribution, independent of the live training RNG."""
+    rng = np.random.default_rng(seed)
+    limit = cfg.half_extent - 3 * cfg.agent_radius
+    if limit <= 0 or cfg.min_spawn_separation >= 2 * (2 ** 0.5) * limit:
+        raise ValueError('The configured arena cannot satisfy the spawn separation.')
+    layouts = []
+    for _ in range(n):
+        for attempt in range(100000):
+            pose = np.array([*rng.uniform(-limit, limit, 2), rng.uniform(-np.pi, np.pi)])
+            goal = rng.uniform(-limit, limit, 2)
+            if np.linalg.norm(pose[:2] - goal) >= cfg.min_spawn_separation:
+                layouts.append((pose, goal))
+                break
+        else:
+            raise RuntimeError('Failed to sample an arena layout; reduce spawn separation.')
+    return layouts
+
+
 def build_probe_bank(sides: dict, n: int, seed: int) -> dict:
     """n world states rendered in every side's modality. Rows sorted by
     distance-to-goal so kernel heatmaps show task structure directly."""
     rng = np.random.default_rng(seed)
     any_side = next(iter(sides.values()))
-    layouts = [any_side.arena._sample_layout() for _ in range(n)]
+    layouts = sample_layouts(any_side.arena.cfg, n, seed)
     dists = np.array([np.linalg.norm(p[:2] - g) for p, g in layouts])
     order = np.argsort(dists)
     layouts = [layouts[i] for i in order]
@@ -192,11 +212,9 @@ def build_eval_transitions(sides: dict, cfg, n: int, seed: int, gamma_unused=Non
     """n fixed (s, a, r, s') transitions rendered in every modality — the
     shared measurement bank for tracked Π-CKA. Actions are random; next state
     and reward come from the pure kinematics, no simulator stepping."""
-    rng = np.random.default_rng(seed)
-    any_side = next(iter(sides.values()))
+    rng = np.random.default_rng(seed + 7919)
     rows = []
-    for _ in range(n):
-        pose, goal = any_side.arena._sample_layout()
+    for pose, goal in sample_layouts(cfg, n, seed):
         action = rng.uniform(-1, 1, 2)
         pose_next = kinematic_step(pose, action, cfg)
         d0 = float(np.linalg.norm(pose[:2] - goal))
@@ -223,6 +241,7 @@ def build_eval_transitions(sides: dict, cfg, n: int, seed: int, gamma_unused=Non
         "sides": per_side,
         "action": torch.tensor(np.array([r[3] for r in rows]), dtype=torch.float32),
         "reward": torch.tensor([r[4] for r in rows], dtype=torch.float32),
+        'done': torch.tensor([r[6] < cfg.reach_threshold for r in rows]),
     }
 
 
@@ -240,7 +259,8 @@ def eval_experiences_for(side, bank: dict, gamma: float) -> list[Experience]:
         from .policy import squashed_logp_entropy
 
         logp, _ = squashed_logp_entropy(mean, log_std, actions)
-        target = bank["reward"].to(side.device) + gamma * value_next
+        done = bank.get('done', torch.zeros(len(actions), dtype=torch.bool)).to(side.device)
+        target = bank['reward'].to(side.device) + gamma * (~done).to(value_next.dtype) * value_next
         for i in range(len(actions)):
             experiences.append(Experience(
                 x=obs[i : i + 1],
