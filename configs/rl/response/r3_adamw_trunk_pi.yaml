@@ -1,0 +1,18 @@
+# Compared with R1, changes only the probed representation.
+_base_: base.yaml
+model:
+  probe_layers:
+  - trunk.1
+plasticity:
+  reference:
+    name: adamw
+guidance:
+  guided:
+  - audio
+  response_objective: pi
+train:
+  outdir: runs/response-r3_adamw_trunk_pi
+  kernel_viz_layers:
+  - trunk.1
+wandb:
+  name: response-r3_adamw_trunk_pi
