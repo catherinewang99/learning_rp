@@ -1,0 +1,19 @@
+# Shared numerical/measurement fixes; task/environment settings inherit unchanged.
+_base_: ../base.yaml
+
+plasticity:
+  stable_comparison: true
+  gram_dtype: float64
+  reference: {name: sgd, lr: 0.0003, clip_grad_norm: 0.5}
+  response_geometry:
+    min_response_norm: 1.0e-10
+    min_relative_spread: 1.0e-5
+    pi_weight: 1.0
+    v_weight: 0.1
+
+guidance:
+  guided: [audio]
+  response_objective: pi
+  max_align_ratio: 0.1
+  upper_half: false
+  loss: []  # response_objective selects the new RL-only comparator

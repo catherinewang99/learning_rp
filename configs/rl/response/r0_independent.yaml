@@ -1,0 +1,17 @@
+# Task-only control; reference responses are measured, never optimized.
+_base_: base.yaml
+model:
+  probe_layers:
+  - trunk.1
+plasticity:
+  reference:
+    name: sgd
+guidance:
+  guided: []
+  response_objective: pi
+train:
+  outdir: runs/response-r0_independent
+  kernel_viz_layers:
+  - trunk.1
+wandb:
+  name: response-r0_independent
