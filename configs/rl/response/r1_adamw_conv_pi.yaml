@@ -1,0 +1,25 @@
+# Numerically corrected Pi baseline with the old rule and probes.
+_base_: base.yaml
+model:
+  probe_layers:
+  - encoder.conv1
+  - encoder.conv2
+  - encoder.conv3
+  - encoder.conv4
+  - encoder.conv5
+  - encoder.conv6
+plasticity:
+  reference:
+    name: adamw
+guidance:
+  guided:
+  - audio
+  response_objective: pi
+train:
+  outdir: runs/response-r1_adamw_conv_pi
+  kernel_viz_layers:
+  - conv1
+  - conv4
+  - conv6
+wandb:
+  name: response-r1_adamw_conv_pi

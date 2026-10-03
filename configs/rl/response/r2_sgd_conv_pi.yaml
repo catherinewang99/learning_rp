@@ -1,0 +1,25 @@
+# Compared with R1, changes only the reference update.
+_base_: base.yaml
+model:
+  probe_layers:
+  - encoder.conv1
+  - encoder.conv2
+  - encoder.conv3
+  - encoder.conv4
+  - encoder.conv5
+  - encoder.conv6
+plasticity:
+  reference:
+    name: sgd
+guidance:
+  guided:
+  - audio
+  response_objective: pi
+train:
+  outdir: runs/response-r2_sgd_conv_pi
+  kernel_viz_layers:
+  - conv1
+  - conv4
+  - conv6
+wandb:
+  name: response-r2_sgd_conv_pi
