@@ -37,6 +37,7 @@ class RunLogger:
 
             run = wandb.init(
                 project=wandb_cfg["project"],
+                entity=wandb_cfg.get("entity"),
                 name=wandb_cfg.get("name"),
                 config=cfg,
             )
