@@ -11,8 +11,9 @@ the teacher's plasticity summary is computed on experiences sampled from its
 LAST ``align_every`` WINDOWS (the whole inter-alignment period, kept in a
 rolling history), cross-rendered into the student's modality. Between
 alignment events, updates are pure PPO and no teacher machinery runs.
-The rule that defines V is the same AdamW + per-transition PPO loss the real
-update uses (honesty invariant, as in the other tracks).
+The rule defining V is configurable independently of real AdamW training.
+SGD-reference plasticity has no optimizer memory. The task/lesson losses and
+history sampling are otherwise unchanged.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import torch
 
 from ..kernels.gram import linear_gram
 from ..kernels.plasticity import plasticity_summary, representation_summary
-from ..rules import AdamWRule
+from .reference import build_reference_rule
 from ..training.metrics import cross_model_alignment
 from .arena import VecArena, bearing
 from .audio_sensor import AudioSensor
@@ -40,7 +41,7 @@ class RLSide:
                  optimizer_cfg: dict, ppo_cfg: dict, device: str = "cpu",
                  sensor: AudioSensor | None = None, seed: int = 0,
                  cue_steps: int | None = None, phase_step: int | None = None,
-                 noise_id_base: int | None = None):
+                 noise_id_base: int | None = None, reference_cfg: dict | None = None):
         self.name, self.modality, self.arena, self.sensor = name, modality, arena, sensor
         self.device = device
         self.probed = probed.to(device)
@@ -51,10 +52,10 @@ class RLSide:
                                   ppo_cfg.get("entropy_coef", 0.01),
                                   ppo_cfg.get("mean_reg", 1e-3))
         opt = optimizer_cfg
-        self.rule = AdamWRule(lr=opt["lr"], betas=tuple(opt.get("betas", (0.9, 0.999))),
-                              eps=opt.get("eps", 1e-8),
-                              weight_decay=opt.get("weight_decay", 0.0),
-                              clip_grad_norm=opt.get("clip_grad_norm"), task=self.task)
+        if opt.get('name', 'adamw').lower() != 'adamw':
+            raise ValueError('Actual RL optimizer is AdamW; set plasticity.reference for SGD measurements.')
+        self.rule = build_reference_rule(self.task, opt, reference_cfg)
+        self.reference_name = (reference_cfg or {}).get('name', 'adamw').lower()
         self.optimizer = torch.optim.AdamW(
             list(self.params.values()), lr=opt["lr"], betas=tuple(opt.get("betas", (0.9, 0.999))),
             eps=opt.get("eps", 1e-8), weight_decay=opt.get("weight_decay", 0.0))
@@ -109,7 +110,8 @@ class RLSide:
         return {k: v.detach() for k, v in self.params.items()}
 
     def sync_rule_state(self):
-        self.rule.sync_state(self.optimizer, self.params)
+        if hasattr(self.rule, 'sync_state'):
+            self.rule.sync_state(self.optimizer, self.params)
 
     # -- observation of the CURRENT env state ---------------------------------
 
@@ -245,7 +247,8 @@ class RLTrainer:
                  kernel_fn=linear_gram, use_checkpoint: bool = True,
                  device: str = "cpu", seed: int = 0, log_fn=None,
                  stats_horizon: int = 2000,     # env steps for episode stats
-                 n_matched_layouts: int = 8):   # fixed layouts for path eval
+                 n_matched_layouts: int = 8, eval_probe_bank: dict | None = None,
+                 response_measurement=None, max_align_ratio: float = 0.1):   # fixed layouts for path eval
         assert set(guided) <= set(sides)
         self.sides, self.guided, self.align_loss = sides, guided, align_loss
         self.window_len, self.m_per_window = window_len, m_per_window
@@ -258,6 +261,9 @@ class RLTrainer:
             name: deque(maxlen=self.align_every) for name in sides}
         self.gamma, self.gae_lambda = gamma, gae_lambda
         self.probe_bank, self.eval_bank = probe_bank, eval_bank
+        self.eval_probe_bank = eval_probe_bank if eval_probe_bank is not None else probe_bank
+        self.response_measurement = response_measurement
+        self.max_align_ratio = max_align_ratio
         self.kernel_fn, self.use_checkpoint = kernel_fn, use_checkpoint
         self.device, self.log_fn = device, log_fn
         self.rng = np.random.default_rng(seed)
@@ -268,8 +274,9 @@ class RLTrainer:
         # path-divergence eval and the 2D board plots — the unbiased
         # uniform-over-layouts success measure
         any_side = next(iter(sides.values()))
-        self.matched_layouts = [any_side.arena._sample_layout()
-                                for _ in range(n_matched_layouts)]
+        from .cross_render import sample_layouts
+
+        self.matched_layouts = sample_layouts(any_side.arena.cfg, n_matched_layouts, seed + 1013)
 
     def _teacher_of(self, name: str) -> str:
         others = [s for s in self.sides if s != name]
@@ -311,6 +318,7 @@ class RLTrainer:
             # actions). Plummeting while log_std holds = mean-driven collapse.
             metrics[f"{name}/exec_entropy_est"] = float(-w["logp"].mean())
 
+            # These are measurements, not additional objectives.
             metrics[f"{name}/distance_progress_mean"] = float(
                 w["distance_progress"].mean())
             metrics[f"{name}/successes_this_window"] = float(w["done"].sum())
@@ -375,13 +383,15 @@ class RLTrainer:
                 align_total, parts = self.align_loss(
                     own, teacher_sum)
 
-                metrics[f"{name}/align_loss"] = (
-                    align_total.detach().item())
+                metrics[f'{name}/align_skipped_invalid_response'] = float(align_total is None)
+                if align_total is not None:
+                    metrics[f'{name}/align_loss'] = align_total.detach().item()
                 metrics.update({
                     f"{name}/align/{key}": float(value)
                     for key, value in parts.items()
                 })
 
+            # Cheap snapshots of selected parameter blocks, every 10 updates.
             watched = {
                 "actor_head": "actor_mean.weight",
                 "encoder_first": "encoder.conv1.weight",
@@ -397,7 +407,7 @@ class RLTrainer:
                 side.optimizer,
                 task_loss,
                 align_total,
-                max_align_ratio=0.1,
+                max_align_ratio=self.max_align_ratio,
                 clip_norm=side.clip_grad_norm,
             )
             metrics.update({
@@ -405,12 +415,17 @@ class RLTrainer:
                 for key, value in update_metrics.items()
             })
 
+            # checked_step already updated parameters and returned grad_norm.
+            # Do not clear gradients and overwrite that metric here.
             for label, old in before.items():
                 delta = side.params[watched[label]].detach() - old
                 metrics[f"{name}/{label}_update_norm"] = delta.norm().item()
 
         self.window_count += 1
-        metrics["step"] = self.window_count * self.window_len
+        metrics['step'] = self.window_count * self.window_len  # preserve existing x-axis
+        metrics['env_transitions_per_agent'] = (metrics['step']
+            * next(iter(self.sides.values())).arena.cfg.num_envs)
+        metrics['task_updates_per_agent'] = self.window_count
         if self.log_fn is not None:
             self.log_fn(metrics)
         return metrics
@@ -422,7 +437,7 @@ class RLTrainer:
         for name, side in self.sides.items():
             side.sync_rule_state()
             experiences = eval_experiences_for(side, self.eval_bank, self.gamma)
-            probes = self.probe_bank["probes"][name].to(side.device)
+            probes = self.eval_probe_bank["probes"][name].to(side.device)
             sums[name] = plasticity_summary(side.probed, side.detached_params(),
                                             side.rule, experiences, probes,
                                             side.buffers, self.kernel_fn)
@@ -433,8 +448,12 @@ class RLTrainer:
         guide = self._teacher_of(self.guided[0]) if self.guided else names[0]
         target = next(n for n in names if n != guide)
         sums = self.eval_summaries()
-        out = {f"eval/{k}": v
-               for k, v in cross_model_alignment(sums[guide], sums[target]).items()}
+        if self.response_measurement is None:
+            measured = cross_model_alignment(sums[guide], sums[target])
+        else:
+            measured = self.response_measurement.evaluation(
+                sums[guide], sums[target], guide, target)
+        out = {f'eval/{k}': v for k, v in measured.items()}
         out.update({f"eval/{k}": v for k, v in self.behavioral_eval().items()})
         return out, sums
 
@@ -451,7 +470,7 @@ class RLTrainer:
         with torch.no_grad():
             stats = {}
             for name, side in self.sides.items():
-                probes = self.probe_bank["probes"][name].to(side.device)
+                probes = self.eval_probe_bank["probes"][name].to(side.device)
                 mean, log_std, _ = side.probed.forward_output(
                     side.detached_params(), probes, side.buffers)
                 stats[name] = (mean.cpu(), log_std.cpu())
