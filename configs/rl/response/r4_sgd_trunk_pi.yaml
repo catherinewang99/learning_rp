@@ -1,0 +1,18 @@
+# Main revised plasticity-kernel condition.
+_base_: base.yaml
+model:
+  probe_layers:
+  - trunk.1
+plasticity:
+  reference:
+    name: sgd
+guidance:
+  guided:
+  - audio
+  response_objective: pi
+train:
+  outdir: runs/response-r4_sgd_trunk_pi
+  kernel_viz_layers:
+  - trunk.1
+wandb:
+  name: response-r4_sgd_trunk_pi
