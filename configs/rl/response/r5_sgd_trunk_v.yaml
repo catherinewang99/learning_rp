@@ -1,0 +1,18 @@
+# Compared with R4, changes only the response objective.
+_base_: base.yaml
+model:
+  probe_layers:
+  - trunk.1
+plasticity:
+  reference:
+    name: sgd
+guidance:
+  guided:
+  - audio
+  response_objective: v
+train:
+  outdir: runs/response-r5_sgd_trunk_v
+  kernel_viz_layers:
+  - trunk.1
+wandb:
+  name: response-r5_sgd_trunk_v
