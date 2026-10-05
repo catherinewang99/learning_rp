@@ -1,0 +1,18 @@
+# Optional: L_pi + 0.1 L_V, with the same combined gradient cap.
+_base_: base.yaml
+model:
+  probe_layers:
+  - trunk.1
+plasticity:
+  reference:
+    name: sgd
+guidance:
+  guided:
+  - audio
+  response_objective: pi_v
+train:
+  outdir: runs/response-r6_sgd_trunk_pi_v
+  kernel_viz_layers:
+  - trunk.1
+wandb:
+  name: response-r6_sgd_trunk_pi_v
